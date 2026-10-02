@@ -1,0 +1,30 @@
+{
+  "name": "carbonpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CarbonPilot - B2B Supplier Sustainability Intelligence and Evidence Verification Platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:api": "npm run dev --workspace=@carbonpilot/api",
+    "dev:web": "npm run dev --workspace=@carbonpilot/web",
+    "build": "npm run build --workspaces --if-present",
+    "build:packages": "npm run build --workspace=@carbonpilot/shared --workspace=@carbonpilot/validation",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "seed": "npm run seed --workspace=@carbonpilot/api"
+  },
+  "keywords": [
+    "carbon",
+    "sustainability",
+    "esg",
+    "scope-3",
+    "supplier-intelligence",
+    "evidence-verification"
+  ],
+  "author": "CarbonPilot Team",
+  "license": "UNLICENSED"
+}
