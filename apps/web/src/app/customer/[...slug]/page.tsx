@@ -3,6 +3,7 @@
 import { useParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { PortalPage } from '@/components/ui/PortalPage';
+import { EvidenceDocumentsWorkspace } from '@/components/evidence/EvidenceDocumentsWorkspace';
 
 const sectionMap: Record<string, { title: string; subtitle: string; stats: Array<{ label: string; value: string }> }> = {
   questionnaires: {
@@ -72,6 +73,17 @@ function toTitle(value: string) {
 export default function CustomerDynamicPage() {
   const params = useParams<{ slug?: string[] }>();
   const slug = params.slug ? params.slug.join('/') : 'dashboard';
+  if (slug === 'documents' || slug === 'evidence-center') {
+    return (
+      <PortalPage
+        title={slug === 'documents' ? 'Documents' : 'Evidence Center'}
+        subtitle="Review uploaded evidence, extract available fields, and run claim verification."
+      >
+        <EvidenceDocumentsWorkspace />
+      </PortalPage>
+    );
+  }
+
   const content = sectionMap[slug] ?? {
     title: toTitle(slug || 'Dashboard'),
     subtitle: 'This section is part of the CarbonPilot foundation and is ready for future feature wiring.',

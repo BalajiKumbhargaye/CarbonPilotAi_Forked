@@ -3,6 +3,7 @@
 import { useParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { PortalPage } from '@/components/ui/PortalPage';
+import { EvidenceDocumentsWorkspace } from '@/components/evidence/EvidenceDocumentsWorkspace';
 
 const sectionMap: Record<string, { title: string; subtitle: string; stats: Array<{ label: string; value: string }> }> = {
   'company/profile': {
@@ -92,6 +93,17 @@ function toTitle(value: string) {
 export default function SupplierDynamicPage() {
   const params = useParams<{ slug?: string[] }>();
   const slug = params.slug ? params.slug.join('/') : 'dashboard';
+  if (slug === 'documents' || slug === 'evidence') {
+    return (
+      <PortalPage
+        title={slug === 'documents' ? 'Documents' : 'Evidence'}
+        subtitle="Upload supplier evidence, review extraction results, and run claim verification."
+      >
+        <EvidenceDocumentsWorkspace />
+      </PortalPage>
+    );
+  }
+
   const content = sectionMap[slug] ?? {
     title: toTitle(slug || 'Dashboard'),
     subtitle: 'This supplier area is part of the CarbonPilot foundation and is intentionally limited to a navigable shell.',
