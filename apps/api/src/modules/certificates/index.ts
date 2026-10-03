@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { CertificateModel } from '../../models/Certificate';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createCertificateSchema } from '@carbonpilot/validation';
 
@@ -70,7 +72,7 @@ export const certificateRoutes = Router();
 certificateRoutes.use(authenticate);
 certificateRoutes.get('/', (req, res, next) => certificateController.getAll(req, res, next));
 certificateRoutes.get('/:id', (req, res, next) => certificateController.getById(req, res, next));
-certificateRoutes.post('/', validate(createCertificateSchema), (req, res, next) =>
+certificateRoutes.post('/', requireOrganizationType(OrganizationType.SUPPLIER), validate(createCertificateSchema), (req, res, next) =>
   certificateController.create(req, res, next)
 );
-certificateRoutes.put('/:id', (req, res, next) => certificateController.update(req, res, next));
+certificateRoutes.put('/:id', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => certificateController.update(req, res, next));

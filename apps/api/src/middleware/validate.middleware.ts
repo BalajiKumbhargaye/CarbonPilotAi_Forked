@@ -8,8 +8,9 @@ export function validate(schema: AnyZodObject) {
       req.body = await schema.parseAsync(req.body);
       next();
     } catch (error) {
-      if (error instanceof ZodError) {
-        const details = error.errors.map((err) => ({
+      if (error instanceof ZodError || (error instanceof Error && error.name === 'ZodError')) {
+        const validationError = error as ZodError;
+        const details = validationError.errors.map((err) => ({
           field: err.path.join('.'),
           message: err.message,
           code: err.code,

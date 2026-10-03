@@ -3,45 +3,102 @@ import jwt from 'jsonwebtoken';
 import { UserModel } from '../../models/User';
 import { OrganizationModel } from '../../models/Organization';
 import { OrganizationMemberModel } from '../../models/OrganizationMember';
+import { SupplierModel } from '../../models/Supplier';
+import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
 import { AppError } from '../../utils/response';
 import { ENV } from '../../config/env';
 import { RegisterInput, LoginInput } from '@carbonpilot/validation';
-import { UserRole, OrganizationType, UserStatus, OrganizationStatus } from '@carbonpilot/shared';
+import { UserRole, OrganizationType, UserStatus, OrganizationStatus, SupplierStatus } from '@carbonpilot/shared';
 
 export class AuthService {
   async register(data: RegisterInput) {
+    const expectedRole =
+      data.organizationType === OrganizationType.CUSTOMER
+        ? UserRole.CUSTOMER_ADMIN
+        : UserRole.SUPPLIER_ADMIN;
+
+    if (data.role !== expectedRole) {
+      throw new AppError('The organization creator must have an administrator role', 400, 'INVALID_ROLE');
+    }
+
     const existingUser = await UserModel.findOne({ email: data.email.toLowerCase() });
     if (existingUser) {
-      throw new AppError('User with this email already exists', 400, 'USER_EXISTS');
+      throw new AppError('An account with this email already exists', 409, 'USER_EXISTS');
     }
 
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(data.password, salt);
 
-    // 1. Create Organization
-    const organization = await OrganizationModel.create({
-      name: data.organizationName,
-      type: data.organizationType,
-      industry: data.industry,
-      gstin: data.gstin,
-      status: OrganizationStatus.ACTIVE,
-    });
+    // Claim the unique email before creating an organization so retries cannot leave duplicates.
+    let user;
+    try {
+      user = await UserModel.create({
+        name: data.name,
+        email: data.email.toLowerCase(),
+        passwordHash,
+        status: UserStatus.ACTIVE,
+      });
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 11000) {
+        throw new AppError('An account with this email already exists', 409, 'USER_EXISTS');
+      }
+      throw error;
+    }
 
-    // 2. Create User
-    const user = await UserModel.create({
-      name: data.name,
-      email: data.email.toLowerCase(),
-      passwordHash,
-      status: UserStatus.ACTIVE,
-    });
+    let organization;
+    let createdOrganization = false;
+    try {
+      organization = data.organizationType === OrganizationType.SUPPLIER
+        ? await OrganizationModel.findOne({ type: OrganizationType.SUPPLIER, contactEmail: user.email })
+        : null;
 
-    // 3. Link User to Organization with Role
-    await OrganizationMemberModel.create({
-      organizationId: organization._id,
-      userId: user._id,
-      role: data.role,
-      status: UserStatus.ACTIVE,
-    });
+      if (!organization) {
+        organization = await OrganizationModel.create({
+          name: data.organizationName,
+          type: data.organizationType,
+          industry: data.industry,
+          contactPerson: data.organizationType === OrganizationType.SUPPLIER ? data.name : undefined,
+          contactEmail: data.organizationType === OrganizationType.SUPPLIER ? user.email : undefined,
+          gstin: data.gstin,
+          status: OrganizationStatus.ACTIVE,
+        });
+        createdOrganization = true;
+      }
+
+      if (data.organizationType === OrganizationType.SUPPLIER) {
+        const supplier = await SupplierModel.findOne({ organizationId: organization._id });
+        if (supplier) {
+          await SupplierModel.findByIdAndUpdate(supplier._id, { status: SupplierStatus.ACTIVE }, { new: true });
+        } else {
+          await SupplierModel.create({
+            organizationId: organization._id,
+            industry: data.industry || organization.industry || 'General',
+            status: SupplierStatus.ACTIVE,
+          });
+        }
+        if (!createdOrganization) {
+          await SupplierRelationshipModel.updateMany(
+            { supplierOrganizationId: organization._id, status: SupplierStatus.PENDING },
+            { status: SupplierStatus.ACTIVE }
+          );
+        }
+      }
+
+      await OrganizationMemberModel.create({
+        organizationId: organization._id,
+        userId: user._id,
+        role: data.role,
+        status: UserStatus.ACTIVE,
+      });
+    } catch (error) {
+      if (organization && createdOrganization) {
+        await OrganizationMemberModel.deleteOne({ organizationId: organization._id, userId: user._id });
+        await SupplierModel.deleteOne({ organizationId: organization._id });
+        await OrganizationModel.deleteOne({ _id: organization._id });
+      }
+      await UserModel.deleteOne({ _id: user._id });
+      throw error;
+    }
 
     const token = this.generateToken({
       userId: user._id.toString(),
@@ -74,7 +131,7 @@ export class AuthService {
     }
 
     if (!user.passwordHash) {
-      throw new AppError('User password hash not found', 500, 'PASSWORD_HASH_MISSING');
+      throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
     }
 
     const isMatch = await bcrypt.compare(data.password, user.passwordHash);

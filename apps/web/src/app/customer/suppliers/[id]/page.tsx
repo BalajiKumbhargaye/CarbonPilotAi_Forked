@@ -1,102 +1,207 @@
 'use client';
 
-import React from 'react';
+import { useEffect, useState } from 'react';
+import { Building2, Edit2, Globe, MapPin, Package } from 'lucide-react';
 import { Breadcrumb } from '@/components/ui/Breadcrumb';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card';
-import { StatusBadge } from '@/components/ui/StatusBadge';
 import { Button } from '@/components/ui/Button';
-import { Building2, MapPin, Globe, ShieldCheck, FileText, Plus } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
+import { LoadingState } from '@/components/ui/LoadingState';
+import { Modal } from '@/components/ui/Modal';
+import { Select } from '@/components/ui/Select';
+import { StatusBadge } from '@/components/ui/StatusBadge';
+import { SupplierForm } from '@/components/suppliers/SupplierForm';
+import { getPurchases, type PurchaseItem } from '@/lib/procurement';
+import {
+  getSupplier,
+  updateSupplier,
+  updateSupplierStatus,
+  type SupplierDirectoryItem,
+  type SupplierInput,
+  type SupplierStatus,
+} from '@/lib/suppliers';
+
+interface SupplierDetails extends SupplierDirectoryItem {
+  products: Array<{ _id: string; name: string; productCode: string; category: string }>;
+}
+
+const statusOptions = [
+  { label: 'Invited', value: 'INVITED' },
+  { label: 'Active', value: 'ACTIVE' },
+  { label: 'Pending', value: 'PENDING' },
+  { label: 'Inactive', value: 'INACTIVE' },
+];
 
 export default function SupplierProfilePage({ params }: { params: { id: string } }) {
+  const [supplier, setSupplier] = useState<SupplierDetails | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [purchases, setPurchases] = useState<PurchaseItem[]>([]);
+  const [historyError, setHistoryError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    getSupplier(params.id).then((result) => {
+      if (active) setSupplier(result);
+    }).catch(() => {
+      if (active) setError('Unable to load supplier. Please try again.');
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    getPurchases({ supplierId: params.id }).then((items) => {
+      if (active) setPurchases(items);
+    }).catch(() => {
+      if (active) setHistoryError('Unable to load purchase history.');
+    });
+    return () => { active = false; };
+  }, [params.id, retryCount]);
+
+  const save = async (values: SupplierInput) => {
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await updateSupplier(params.id, values);
+      setSupplier((current) => current ? { ...current, ...updated } : null);
+      setEditing(false);
+      setNotice('Supplier updated successfully.');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to update supplier. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeStatus = async (status: SupplierStatus) => {
+    if (!supplier) return;
+    setError('');
+    try {
+      setSupplier((current) => current ? { ...current, status } : null);
+      const updated = await updateSupplierStatus(supplier._id, status);
+      setSupplier((current) => current ? { ...current, ...updated } : null);
+      setNotice('Supplier status updated.');
+    } catch {
+      setError('Unable to update supplier status. Please try again.');
+      setSupplier((current) => current ? { ...current, status: supplier.status } : null);
+    }
+  };
+
+  if (loading) return <LoadingState message="Loading supplier..." />;
+  if (!supplier) {
+    return (
+      <div className="space-y-4 py-10 text-center">
+        <p role="alert" className="text-sm text-rose-700">{error || 'Supplier not found.'}</p>
+        <Button variant="outline" size="sm" onClick={() => setRetryCount((value) => value + 1)}>Try again</Button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <Breadcrumb
-        items={[
-          { label: 'Suppliers', href: '/customer/suppliers' },
-          { label: 'Titan Alloy & Steel Works' },
-        ]}
-      />
+      <Breadcrumb items={[{ label: 'Suppliers', href: '/customer/suppliers' }, { label: supplier.companyName }]} />
+      {notice && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</p>}
+      {error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</p>}
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-              Titan Alloy &amp; Steel Works
-            </h1>
-            <StatusBadge status="Verified" />
+      <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between dark:border-slate-800">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-emerald-50 p-2 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"><Building2 className="h-5 w-5" /></div>
+          <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{supplier.companyName}</h1>
+              <StatusBadge status={supplier.status} />
+            </div>
+            <p className="mt-1 text-sm text-slate-500">{supplier.category || supplier.industry}</p>
+            <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{[supplier.city, supplier.country].filter(Boolean).join(', ') || 'Location not provided'}</span>
+              {supplier.website && <a className="inline-flex items-center gap-1 hover:text-emerald-700" href={supplier.website} target="_blank" rel="noreferrer"><Globe className="h-3.5 w-3.5" />Website</a>}
+            </p>
           </div>
-          <p className="mt-1 flex items-center gap-4 text-xs text-slate-500">
-            <span className="flex items-center gap-1">
-              <MapPin className="h-3.5 w-3.5" /> Gujarat Industrial Belt, India
-            </span>
-            <span className="flex items-center gap-1">
-              <Globe className="h-3.5 w-3.5" /> https://titansteel.example.com
-            </span>
-          </p>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            aria-label="Supplier status"
+            className="w-36"
+            value={supplier.status === 'TERMINATED' ? 'INACTIVE' : supplier.status}
+            options={statusOptions}
+            onChange={(event) => changeStatus(event.target.value as SupplierStatus)}
+          />
+          <Button variant="outline" size="sm" onClick={() => setEditing(true)}><Edit2 className="h-4 w-4" /> Edit supplier</Button>
+        </div>
+      </header>
 
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
-            Request Data Update
-          </Button>
-          <Button size="sm">Download Evidence Dossier</Button>
-        </div>
+      <section aria-labelledby="supplier-overview" className="space-y-3">
+        <h2 id="supplier-overview" className="text-base font-semibold text-slate-900 dark:text-slate-100">Overview</h2>
+        <Card>
+          <CardContent className="grid gap-x-8 gap-y-5 p-5 sm:grid-cols-2 lg:grid-cols-3">
+            <OverviewField label="Company" value={supplier.legalName ? `${supplier.companyName} (${supplier.legalName})` : supplier.companyName} />
+            <OverviewField label="Industry" value={supplier.industry} />
+            <OverviewField label="Location" value={[supplier.city, supplier.country].filter(Boolean).join(', ')} />
+            <OverviewField label="Contact person" value={supplier.contactPerson} />
+            <OverviewField label="Contact email" value={supplier.contactEmail} />
+            <OverviewField label="Contact phone" value={supplier.contactPhone} />
+            <OverviewField label="Connected" value={supplier.connectedAt ? new Date(supplier.connectedAt).toLocaleDateString() : '—'} />
+          </CardContent>
+        </Card>
+      </section>
+
+      <section aria-labelledby="supplier-products" className="space-y-3">
+        <h2 id="supplier-products" className="text-base font-semibold text-slate-900 dark:text-slate-100">Products</h2>
+        <Card>
+          <CardHeader>
+            <CardTitle>Supplier products</CardTitle>
+            <CardDescription>{supplier.products.length} products</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {supplier.products.length ? (
+              <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                {supplier.products.map((product) => <div key={product._id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"><Package className="h-4 w-4 text-slate-400" /><div><p className="text-sm font-medium text-slate-800 dark:text-slate-200">{product.name}</p><p className="text-xs text-slate-500">{product.productCode} · {product.category}</p></div></div>)}
+              </div>
+            ) : <EmptyState>No products added yet.</EmptyState>}
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Purchase History</h2>
+        <Card>
+          <CardContent className="p-0">
+            {historyError ? <p role="alert" className="p-5 text-sm text-rose-700">{historyError}</p> : purchases.length ? (
+              <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Reference</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Quantity</th><th className="px-4 py-3">Amount</th></tr></thead><tbody className="divide-y divide-slate-200 dark:divide-slate-800">{purchases.map((purchase) => <tr key={purchase._id}><td className="px-4 py-3">{new Date(purchase.purchaseDate).toLocaleDateString()}</td><td className="px-4 py-3">{purchase.referenceNumber || '—'}</td><td className="px-4 py-3">{purchase.product?.name || '—'}</td><td className="px-4 py-3">{Number(purchase.quantity).toLocaleString()} {purchase.unit}</td><td className="px-4 py-3 font-medium">{formatMoney(purchase.totalAmount, purchase.currency)}</td></tr>)}</tbody></table></div>
+            ) : <EmptyState>No purchase records yet.</EmptyState>}
+          </CardContent>
+        </Card>
+      </section>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <EmptySection title="Carbon">Carbon data will appear here once supplier carbon records are available.</EmptySection>
+        <EmptySection title="Evidence">No evidence submitted yet.</EmptySection>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Catalog Products (2)</CardTitle>
-            <CardDescription>Verified product carbon footprints</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-xs">
-            <div className="rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-              <p className="font-semibold text-slate-800 dark:text-slate-200">Automotive Structural Steel S500MC</p>
-              <p className="text-slate-500">TITAN-STL-500 • 1.82 kgCO2e/kg</p>
-            </div>
-            <div className="rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-              <p className="font-semibold text-slate-800 dark:text-slate-200">Hot-Rolled Heavy Plate</p>
-              <p className="text-slate-500">TITAN-PLT-300 • 2.05 kgCO2e/kg</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Production Facilities</CardTitle>
-            <CardDescription>Operational manufacturing plants</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-xs">
-            <div className="rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-              <p className="font-semibold text-slate-800 dark:text-slate-200">Blast Furnace Complex #4</p>
-              <p className="text-slate-500">Capacity: 500,000 MT/yr • Grid Mix Verified</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Verified Certificates</CardTitle>
-            <CardDescription>Audited management certifications</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-xs">
-            <div className="rounded-lg border border-slate-100 p-3 dark:border-slate-800 flex items-center justify-between">
-              <div>
-                <p className="font-semibold text-slate-800 dark:text-slate-200">ISO 14001:2015</p>
-                <p className="text-slate-500">Valid until Dec 2025</p>
-              </div>
-              <StatusBadge status="Verified" />
-            </div>
-            <div className="rounded-lg border border-slate-100 p-3 dark:border-slate-800 flex items-center justify-between">
-              <div>
-                <p className="font-semibold text-slate-800 dark:text-slate-200">ISO 50001:2018</p>
-                <p className="text-slate-500">Valid until Nov 2026</p>
-              </div>
-              <StatusBadge status="Verified" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <Modal isOpen={editing} onClose={() => setEditing(false)} title="Edit supplier" description="Update supplier details connected to your organization." className="max-h-[90vh] max-w-3xl overflow-y-auto">
+        <SupplierForm key={supplier._id} supplier={supplier} onSubmit={save} isSubmitting={saving} submitLabel="Save changes" />
+      </Modal>
     </div>
   );
+}
+
+function OverviewField({ label, value }: { label: string; value?: string }) {
+  return <div><p className="text-xs font-medium uppercase text-slate-500">{label}</p><p className="mt-1 text-sm text-slate-800 dark:text-slate-200">{value || '—'}</p></div>;
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <p className="py-5 text-sm text-slate-500">{children}</p>;
+}
+
+function EmptySection({ title, children }: { title: string; children: React.ReactNode }) {
+  return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent><EmptyState>{children}</EmptyState></CardContent></Card>;
+}
+
+function formatMoney(amount: string, currency: string) {
+  const value = Number(amount);
+  try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
+  catch { return `${currency} ${amount}`; }
 }

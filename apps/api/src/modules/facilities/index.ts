@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { FacilityModel } from '../../models/Facility';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createFacilitySchema, updateFacilitySchema } from '@carbonpilot/validation';
 
@@ -69,6 +71,7 @@ export const facilityController = new FacilityController();
 
 export const facilityRoutes = Router();
 facilityRoutes.use(authenticate);
+facilityRoutes.use(requireOrganizationType(OrganizationType.SUPPLIER));
 facilityRoutes.get('/', (req, res, next) => facilityController.getAll(req, res, next));
 facilityRoutes.get('/:id', (req, res, next) => facilityController.getById(req, res, next));
 facilityRoutes.post('/', validate(createFacilitySchema), (req, res, next) =>

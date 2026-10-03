@@ -28,6 +28,19 @@ export enum OrganizationStatus {
   INACTIVE = 'INACTIVE',
 }
 
+export enum SupplierStatus {
+  INVITED = 'INVITED',
+  ACTIVE = 'ACTIVE',
+  PENDING = 'PENDING',
+  INACTIVE = 'INACTIVE',
+  TERMINATED = 'TERMINATED',
+}
+
+export enum ProductStatus {
+  ACTIVE = 'ACTIVE',
+  INACTIVE = 'INACTIVE',
+}
+
 export enum DocumentType {
   PCF = 'PCF', // Product Carbon Footprint
   EPD = 'EPD', // Environmental Product Declaration
@@ -134,9 +147,12 @@ export enum QuestionResponseStatus {
 }
 
 export enum PurchaseStatus {
+  DRAFT = 'DRAFT',
+  CONFIRMED = 'CONFIRMED',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
   PENDING = 'PENDING',
   DELIVERED = 'DELIVERED',
-  CANCELLED = 'CANCELLED',
 }
 
 export enum ExtractionStatus {

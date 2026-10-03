@@ -4,6 +4,7 @@ export * from './OrganizationMember';
 export * from './SupplierRelationship';
 export * from './Supplier';
 export * from './Product';
+export * from './ProductCategory';
 export * from './Facility';
 export * from './Purchase';
 export * from './Invoice';

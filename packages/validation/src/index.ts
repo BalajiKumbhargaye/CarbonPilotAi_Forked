@@ -10,6 +10,8 @@ import {
   CertificateStatus,
   DataRequestStatus,
   PurchaseStatus,
+  SupplierStatus,
+  ProductStatus,
 } from '@carbonpilot/shared';
 
 /**
@@ -21,10 +23,10 @@ export const loginSchema = z.object({
 });
 
 export const registerSchema = z.object({
-  name: z.string().min(2, 'Name must be at least 2 characters'),
-  email: z.string().email('Invalid email address'),
+  name: z.string().trim().min(2, 'Name must be at least 2 characters'),
+  email: z.string().trim().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  organizationName: z.string().min(2, 'Organization name is required'),
+  organizationName: z.string().trim().min(2, 'Organization name is required'),
   organizationType: z.nativeEnum(OrganizationType),
   role: z.nativeEnum(UserRole),
   industry: z.string().optional(),
@@ -55,7 +57,7 @@ export const createOrganizationSchema = z.object({
 export const updateOrganizationSchema = createOrganizationSchema.partial();
 
 export const updateSupplierRelationshipSchema = z.object({
-  status: z.enum(['ACTIVE', 'PENDING', 'TERMINATED']).optional(),
+  status: z.nativeEnum(SupplierStatus).optional(),
   sharedDataPermissions: z
     .object({
       carbon: z.boolean(),
@@ -70,13 +72,36 @@ export const updateSupplierRelationshipSchema = z.object({
  * Supplier & Profile Schemas
  */
 export const createSupplierSchema = z.object({
-  organizationId: z.string().min(1, 'Organization ID is required'),
-  industry: z.string().min(1, 'Industry is required'),
+  companyName: z.string().trim().min(2, 'Company name is required'),
+  legalName: z.string().trim().optional(),
+  industry: z.string().trim().min(1, 'Industry is required'),
+  country: z.string().trim().min(1, 'Country is required'),
+  city: z.string().trim().min(1, 'City is required'),
+  contactPerson: z.string().trim().min(2, 'Contact person is required'),
+  contactEmail: z.string().trim().email('Invalid contact email'),
+  contactPhone: z.string().trim().min(1, 'Contact phone is required'),
+  website: z.string().url('Invalid website URL').optional().or(z.literal('')),
+  category: z.string().trim().min(1, 'Supplier category is required'),
+  notes: z.string().trim().optional(),
 });
 
-export const updateSupplierSchema = z.object({
-  industry: z.string().optional(),
-  verificationStatus: z.string().optional(),
+export const updateSupplierSchema = createSupplierSchema.partial();
+
+export const updateSupplierStatusSchema = z.object({
+  status: z.nativeEnum(SupplierStatus),
+});
+
+export const updateSupplierProfileSchema = z.object({
+  name: z.string().trim().min(2, 'Company name is required').optional(),
+  legalName: z.string().trim().optional(),
+  industry: z.string().trim().min(1, 'Industry is required').optional(),
+  country: z.string().trim().optional(),
+  city: z.string().trim().optional(),
+  contactPerson: z.string().trim().optional(),
+  contactEmail: z.string().trim().email('Invalid contact email').or(z.literal('')).optional(),
+  contactPhone: z.string().trim().optional(),
+  website: z.string().url('Invalid website URL').optional().or(z.literal('')),
+  description: z.string().trim().optional(),
 });
 
 /**
@@ -91,16 +116,28 @@ export const productCarbonDataSchema = z.object({
 });
 
 export const createProductSchema = z.object({
-  supplierId: z.string().min(1, 'Supplier ID is required'),
-  name: z.string().min(1, 'Product name is required'),
-  productCode: z.string().min(1, 'Product code is required'),
-  category: z.string().min(1, 'Category is required'),
+  supplierId: z.string().optional(),
+  name: z.string().trim().min(1, 'Product name is required'),
+  productCode: z.string().trim().optional(),
+  categoryId: z.string().min(1, 'Category is required'),
+  unit: z.string().trim().min(1, 'Unit is required'),
   description: z.string().optional(),
   productionFacilityIds: z.array(z.string()).default([]),
-  carbonData: productCarbonDataSchema.optional(),
+  status: z.nativeEnum(ProductStatus).optional(),
 });
 
-export const updateProductSchema = createProductSchema.partial();
+export const updateProductSchema = z.object({
+  name: z.string().trim().min(1, 'Product name is required').optional(),
+  productCode: z.string().trim().optional(),
+  categoryId: z.string().min(1, 'Category is required').optional(),
+  unit: z.string().trim().min(1, 'Unit is required').optional(),
+  description: z.string().optional(),
+  status: z.nativeEnum(ProductStatus).optional(),
+});
+
+export const createProductCategorySchema = z.object({
+  name: z.string().trim().min(1, 'Category name is required').max(80),
+});
 
 /**
  * Facility Schemas
@@ -119,17 +156,42 @@ export const updateFacilitySchema = createFacilitySchema.partial();
  * Procurement (Purchase, Invoice, PO) Schemas
  */
 export const createPurchaseSchema = z.object({
-  supplierOrganizationId: z.string().min(1, 'Supplier organization is required'),
+  supplierId: z.string().min(1, 'Supplier is required'),
   productId: z.string().min(1, 'Product ID is required'),
-  purchaseOrderId: z.string().optional(),
-  invoiceId: z.string().optional(),
-  quantity: z.number().positive('Quantity must be greater than 0'),
-  unit: z.string().min(1, 'Unit is required'),
-  purchaseDate: z.string().or(z.date()),
-  status: z.nativeEnum(PurchaseStatus).default(PurchaseStatus.PENDING),
+  quantity: z.union([
+    z.number().finite().positive(),
+    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Quantity must be a positive decimal'),
+  ]).transform(String).refine((value) => Number(value) > 0, 'Quantity must be greater than 0'),
+  unit: z.string().trim().min(1, 'Unit is required'),
+  unitPrice: z.union([
+    z.number().finite().nonnegative(),
+    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Unit price must be a non-negative decimal'),
+  ]).transform(String).refine((value) => Number(value) >= 0, 'Unit price cannot be negative'),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code'),
+  purchaseDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Invalid purchase date'),
+  referenceNumber: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(2000).optional(),
+  status: z.nativeEnum(PurchaseStatus).default(PurchaseStatus.CONFIRMED),
 });
 
-export const updatePurchaseSchema = createPurchaseSchema.partial();
+export const updatePurchaseSchema = z.object({
+  quantity: z.union([
+    z.number().finite().positive(),
+    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Quantity must be a positive decimal'),
+  ]).transform(String).refine((value) => Number(value) > 0, 'Quantity must be greater than 0').optional(),
+  unitPrice: z.union([
+    z.number().finite().nonnegative(),
+    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Unit price must be a non-negative decimal'),
+  ]).transform(String).refine((value) => Number(value) >= 0, 'Unit price cannot be negative').optional(),
+  purchaseDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Invalid purchase date').optional(),
+  referenceNumber: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(2000).optional(),
+  status: z.nativeEnum(PurchaseStatus).optional(),
+});
+
+export const updatePurchaseStatusSchema = z.object({
+  status: z.nativeEnum(PurchaseStatus),
+});
 
 export const invoiceItemSchema = z.object({
   description: z.string().min(1, 'Item description is required'),

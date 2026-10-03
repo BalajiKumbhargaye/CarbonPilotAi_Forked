@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { IProduct, VerificationStatus } from '@carbonpilot/shared';
+import { IProduct, ProductStatus, VerificationStatus } from '@carbonpilot/shared';
 
 export interface IProductDocument extends Omit<IProduct, '_id'>, Document {}
 
@@ -28,17 +28,23 @@ const ProductSchema = new Schema<IProductDocument>(
       index: true,
     },
     name: { type: String, required: true, trim: true },
-    productCode: { type: String, required: true, trim: true },
+    productCode: { type: String, trim: true },
     category: { type: String, required: true, trim: true },
+    categoryId: {
+      type: Schema.Types.ObjectId,
+      ref: 'ProductCategory',
+      index: true,
+    },
+    unit: { type: String, required: true, trim: true, default: 'unit' },
     description: { type: String, trim: true },
+    status: { type: String, enum: Object.values(ProductStatus), default: ProductStatus.ACTIVE, required: true },
     productionFacilityIds: [{ type: Schema.Types.ObjectId, ref: 'Facility' }],
     carbonData: { type: ProductCarbonDataSchema },
   },
   {
     timestamps: true,
+    autoIndex: false,
   }
 );
-
-ProductSchema.index({ supplierId: 1, productCode: 1 }, { unique: true });
 
 export const ProductModel = mongoose.model<IProductDocument>('Product', ProductSchema);

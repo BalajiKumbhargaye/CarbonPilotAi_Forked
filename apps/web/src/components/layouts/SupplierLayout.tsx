@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { clearStoredSession, getStoredSession } from '@/lib/auth';
+import { getStoredSession, logout } from '@/lib/auth';
 import {
   LayoutDashboard,
   Building,
@@ -100,8 +100,7 @@ export const SupplierLayout: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [pathname]);
 
   const handleSignOut = () => {
-    clearStoredSession();
-    router.push('/login');
+    logout((path) => router.push(path));
   };
 
   return (

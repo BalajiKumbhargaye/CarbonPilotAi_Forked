@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { ISupplierRelationship } from '@carbonpilot/shared';
+import { ISupplierRelationship, SupplierStatus } from '@carbonpilot/shared';
 
 export interface ISupplierRelationshipDocument extends Omit<ISupplierRelationship, '_id'>, Document {}
 
@@ -19,8 +19,8 @@ const SupplierRelationshipSchema = new Schema<ISupplierRelationshipDocument>(
     },
     status: {
       type: String,
-      enum: ['ACTIVE', 'PENDING', 'TERMINATED'],
-      default: 'PENDING',
+      enum: Object.values(SupplierStatus),
+      default: SupplierStatus.PENDING,
     },
     sharedDataPermissions: {
       carbon: { type: Boolean, default: true },

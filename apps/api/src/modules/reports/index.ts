@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { EvidencePackModel } from '../../models/EvidencePack';
 import { sendSuccess, sendError } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createEvidencePackSchema } from '@carbonpilot/validation';
 import { EvidencePackStatus } from '@carbonpilot/shared';
@@ -75,6 +77,7 @@ export const reportController = new ReportController();
 
 export const reportRoutes = Router();
 reportRoutes.use(authenticate);
+reportRoutes.use(requireOrganizationType(OrganizationType.CUSTOMER));
 reportRoutes.get('/evidence-packs', (req, res, next) =>
   reportController.getEvidencePacks(req, res, next)
 );

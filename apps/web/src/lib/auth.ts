@@ -48,6 +48,11 @@ export function clearStoredSession() {
   window.localStorage.removeItem(STORAGE_KEY);
 }
 
+export function logout(redirect: (path: string) => void) {
+  clearStoredSession();
+  redirect('/login');
+}
+
 function buildUrl(path: string) {
   const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
   return `${base.replace(/\/$/, '')}${path}`;

@@ -5,9 +5,10 @@ import { PurchaseModel } from '../../models/Purchase';
 import { ClaimModel } from '../../models/Claim';
 import { sendSuccess, sendError } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createCarbonFactorSchema, calculateCarbonSchema } from '@carbonpilot/validation';
-import { ClaimStatus } from '@carbonpilot/shared';
+import { ClaimStatus, OrganizationType } from '@carbonpilot/shared';
 
 export class CarbonService {
   async getCalculations(customerOrgId?: string) {
@@ -153,10 +154,10 @@ export const carbonRoutes = Router();
 carbonRoutes.use(authenticate);
 
 // Calculations
-carbonRoutes.get('/calculations', (req, res, next) =>
+carbonRoutes.get('/calculations', requireOrganizationType(OrganizationType.CUSTOMER), (req, res, next) =>
   carbonController.getCalculations(req, res, next)
 );
-carbonRoutes.post('/calculate', validate(calculateCarbonSchema), (req, res, next) =>
+carbonRoutes.post('/calculate', requireOrganizationType(OrganizationType.CUSTOMER), validate(calculateCarbonSchema), (req, res, next) =>
   carbonController.calculate(req, res, next)
 );
 

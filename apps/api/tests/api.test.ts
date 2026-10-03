@@ -31,19 +31,13 @@ describe('CarbonPilot Technical Foundation Tests', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should validate product schema with carbon data', () => {
+  it('should validate product schema with category and unit', () => {
     const product = {
-      supplierId: 'supp-123',
+      supplierId: '507f1f77bcf86cd799439011',
       name: 'Low Carbon Aluminum',
       productCode: 'AL-LC-10',
-      category: 'Metals',
-      carbonData: {
-        pcf: 4.2,
-        unit: 'kgCO2e/kg',
-        methodology: 'ISO 14067',
-        reportingPeriod: '2024',
-        boundary: 'Cradle-to-Gate',
-      },
+      categoryId: '507f1f77bcf86cd799439012',
+      unit: 'kg',
     };
     const result = createProductSchema.safeParse(product);
     expect(result.success).toBe(true);

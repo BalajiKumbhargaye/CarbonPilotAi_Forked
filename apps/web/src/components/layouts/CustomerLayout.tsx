@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { clearStoredSession, getStoredSession } from '@/lib/auth';
+import { getStoredSession, logout } from '@/lib/auth';
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -20,6 +20,7 @@ import {
   Calculator,
   BarChart3,
   Package,
+  Boxes,
   Bell,
   Settings,
   Menu,
@@ -54,6 +55,10 @@ const customerNav: NavSection[] = [
       { label: 'All Suppliers', href: '/customer/suppliers', icon: Users },
       { label: 'Supplier Comparison', href: '/customer/suppliers/comparison', icon: GitCompare },
     ],
+  },
+  {
+    title: 'CATALOG',
+    items: [{ label: 'Products', href: '/customer/products', icon: Boxes }],
   },
   {
     title: 'DATA COLLECTION',
@@ -104,8 +109,7 @@ export const CustomerLayout: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [pathname]);
 
   const handleSignOut = () => {
-    clearStoredSession();
-    router.push('/login');
+    logout((path) => router.push(path));
   };
 
   return (

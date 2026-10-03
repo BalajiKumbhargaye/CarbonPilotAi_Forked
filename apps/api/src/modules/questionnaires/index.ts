@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { DataRequestModel } from '../../models/DataRequest';
 import { QuestionResponseModel } from '../../models/QuestionResponse';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createDataRequestSchema, submitQuestionResponseSchema } from '@carbonpilot/validation';
 import { defaultAIOrchestrator } from '../../services/ai/AIOrchestrator';
@@ -118,7 +120,7 @@ questionnaireRoutes.get('/requests', (req, res, next) =>
 questionnaireRoutes.get('/requests/:id', (req, res, next) =>
   questionnaireController.getRequestById(req, res, next)
 );
-questionnaireRoutes.post('/requests', validate(createDataRequestSchema), (req, res, next) =>
+questionnaireRoutes.post('/requests', requireOrganizationType(OrganizationType.CUSTOMER), validate(createDataRequestSchema), (req, res, next) =>
   questionnaireController.createDataRequest(req, res, next)
 );
 questionnaireRoutes.get('/requests/:id/adaptive-questions', (req, res, next) =>
@@ -126,6 +128,6 @@ questionnaireRoutes.get('/requests/:id/adaptive-questions', (req, res, next) =>
 );
 
 // Question responses
-questionnaireRoutes.post('/responses', validate(submitQuestionResponseSchema), (req, res, next) =>
+questionnaireRoutes.post('/responses', requireOrganizationType(OrganizationType.SUPPLIER), validate(submitQuestionResponseSchema), (req, res, next) =>
   questionnaireController.submitResponse(req, res, next)
 );

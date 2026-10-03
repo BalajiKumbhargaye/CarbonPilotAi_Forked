@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { ClaimEvidenceLinkModel } from '../../models/ClaimEvidenceLink';
 import { EvidenceCheckModel } from '../../models/EvidenceCheck';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { linkEvidenceSchema } from '@carbonpilot/validation';
 
@@ -55,7 +57,7 @@ export const evidenceController = new EvidenceController();
 
 export const evidenceRoutes = Router();
 evidenceRoutes.use(authenticate);
-evidenceRoutes.post('/link', validate(linkEvidenceSchema), (req, res, next) =>
+evidenceRoutes.post('/link', requireOrganizationType(OrganizationType.SUPPLIER), validate(linkEvidenceSchema), (req, res, next) =>
   evidenceController.linkEvidence(req, res, next)
 );
 evidenceRoutes.get('/claim/:claimId', (req, res, next) =>

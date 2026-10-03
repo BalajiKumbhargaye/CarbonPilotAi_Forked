@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Users,
   DollarSign,
@@ -20,8 +20,22 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { Progress } from '@/components/ui/Progress';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
+import { getPurchaseSummary, type PurchaseSummary } from '@/lib/procurement';
 
 export default function CustomerDashboardPage() {
+  const [procurementSummary, setProcurementSummary] = useState<PurchaseSummary | null>(null);
+
+  useEffect(() => {
+    getPurchaseSummary().then(setProcurementSummary).catch(() => setProcurementSummary(null));
+  }, []);
+
+  const purchaseValue = procurementSummary?.totalPurchaseValueByCurrency.length
+    ? procurementSummary.totalPurchaseValueByCurrency.map(({ amount, currency }) => {
+      try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(amount)); }
+      catch { return `${currency} ${amount}`; }
+    }).join(' · ')
+    : '—';
+
   return (
     <div className="space-y-8">
       {/* Top Banner / Welcome */}
@@ -52,15 +66,15 @@ export default function CustomerDashboardPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <MetricCard
           title="Active Suppliers"
-          value="48"
-          change="+3 this month"
+          value={procurementSummary ? String(procurementSummary.activeSuppliers) : '—'}
+          change="Active connected suppliers"
           isPositive={true}
           icon={Users}
         />
         <MetricCard
           title="Purchase Value"
-          value="$14.2M"
-          change="92% mapped"
+          value={procurementSummary ? purchaseValue : '—'}
+          change="Grouped by currency"
           isPositive={true}
           icon={DollarSign}
         />

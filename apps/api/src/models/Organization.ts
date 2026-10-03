@@ -13,6 +13,13 @@ const OrganizationSchema = new Schema<IOrganizationDocument>(
     },
     gstin: { type: String, trim: true },
     industry: { type: String, trim: true },
+    legalName: { type: String, trim: true },
+    country: { type: String, trim: true },
+    city: { type: String, trim: true },
+    contactPerson: { type: String, trim: true },
+    contactEmail: { type: String, lowercase: true, trim: true },
+    contactPhone: { type: String, trim: true },
+    description: { type: String, trim: true },
     address: { type: String, trim: true },
     website: { type: String, trim: true },
     status: {
@@ -23,6 +30,17 @@ const OrganizationSchema = new Schema<IOrganizationDocument>(
   },
   {
     timestamps: true,
+  }
+);
+
+OrganizationSchema.index(
+  { contactEmail: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      type: OrganizationType.SUPPLIER,
+      contactEmail: { $type: 'string' },
+    },
   }
 );
 

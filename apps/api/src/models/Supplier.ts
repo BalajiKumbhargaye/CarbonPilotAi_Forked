@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { ISupplier, VerificationStatus } from '@carbonpilot/shared';
+import { ISupplier, SupplierStatus, VerificationStatus } from '@carbonpilot/shared';
 
 export interface ISupplierDocument extends Omit<ISupplier, '_id'>, Document {}
 
@@ -13,6 +13,14 @@ const SupplierSchema = new Schema<ISupplierDocument>(
       index: true,
     },
     industry: { type: String, required: true, trim: true },
+    category: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    status: {
+      type: String,
+      enum: Object.values(SupplierStatus),
+      default: SupplierStatus.PENDING,
+      required: true,
+    },
     verificationStatus: {
       type: String,
       enum: Object.values(VerificationStatus),

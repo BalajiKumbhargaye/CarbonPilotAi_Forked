@@ -1,13 +1,17 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType, PurchaseStatus } from '@carbonpilot/shared';
 import { PurchaseModel } from '../../models/Purchase';
 import { InvoiceModel } from '../../models/Invoice';
 import { PurchaseOrderModel } from '../../models/PurchaseOrder';
+import { purchasesService } from './purchases.service';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import {
   createPurchaseSchema,
   updatePurchaseSchema,
+  updatePurchaseStatusSchema,
   createInvoiceSchema,
   createPurchaseOrderSchema,
 } from '@carbonpilot/validation';
@@ -62,7 +66,12 @@ export const procurementService = new ProcurementService();
 export class ProcurementController {
   async getPurchases(req: Request, res: Response, next: NextFunction) {
     try {
-      const purchases = await procurementService.getPurchases(req.user?.organizationId);
+      const filters: Record<string, string> = {};
+      for (const key of ['supplierId', 'productId', 'status', 'search', 'startDate', 'endDate']) {
+        const value = req.query[key];
+        if (typeof value === 'string') filters[key] = value;
+      }
+      const purchases = await purchasesService.getAll(req.user!.organizationId, filters);
       return sendSuccess(res, purchases);
     } catch (error) {
       next(error);
@@ -71,8 +80,44 @@ export class ProcurementController {
 
   async createPurchase(req: Request, res: Response, next: NextFunction) {
     try {
-      const purchase = await procurementService.createPurchase(req.body, req.user!.organizationId);
+      const purchase = await purchasesService.create(req.body, req.user!.organizationId);
       return sendSuccess(res, purchase, 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getPurchaseSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      return sendSuccess(res, await purchasesService.getSummary(req.user!.organizationId));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getPurchaseById(req: Request, res: Response, next: NextFunction) {
+    try {
+      return sendSuccess(res, await purchasesService.getById(req.params.id as string, req.user!.organizationId));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updatePurchase(req: Request, res: Response, next: NextFunction) {
+    try {
+      return sendSuccess(res, await purchasesService.update(req.params.id as string, req.body, req.user!.organizationId));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updatePurchaseStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      return sendSuccess(res, await purchasesService.updateStatus(
+        req.params.id as string,
+        req.body.status as PurchaseStatus,
+        req.user!.organizationId
+      ));
     } catch (error) {
       next(error);
     }
@@ -119,11 +164,20 @@ export const procurementController = new ProcurementController();
 
 export const procurementRoutes = Router();
 procurementRoutes.use(authenticate);
+procurementRoutes.use(requireOrganizationType(OrganizationType.CUSTOMER));
 
 // Purchases
+procurementRoutes.get('/purchases/summary', (req, res, next) => procurementController.getPurchaseSummary(req, res, next));
 procurementRoutes.get('/purchases', (req, res, next) => procurementController.getPurchases(req, res, next));
 procurementRoutes.post('/purchases', validate(createPurchaseSchema), (req, res, next) =>
   procurementController.createPurchase(req, res, next)
+);
+procurementRoutes.get('/purchases/:id', (req, res, next) => procurementController.getPurchaseById(req, res, next));
+procurementRoutes.patch('/purchases/:id/status', validate(updatePurchaseStatusSchema), (req, res, next) =>
+  procurementController.updatePurchaseStatus(req, res, next)
+);
+procurementRoutes.patch('/purchases/:id', validate(updatePurchaseSchema), (req, res, next) =>
+  procurementController.updatePurchase(req, res, next)
 );
 
 // Invoices

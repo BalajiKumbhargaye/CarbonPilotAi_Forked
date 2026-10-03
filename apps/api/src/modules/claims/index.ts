@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { OrganizationType } from '@carbonpilot/shared';
 import { ClaimModel } from '../../models/Claim';
 import { ClaimEvidenceLinkModel } from '../../models/ClaimEvidenceLink';
 import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createClaimSchema } from '@carbonpilot/validation';
 
@@ -80,7 +82,7 @@ export const claimRoutes = Router();
 claimRoutes.use(authenticate);
 claimRoutes.get('/', (req, res, next) => claimController.getAll(req, res, next));
 claimRoutes.get('/:id', (req, res, next) => claimController.getById(req, res, next));
-claimRoutes.post('/', validate(createClaimSchema), (req, res, next) =>
+claimRoutes.post('/', requireOrganizationType(OrganizationType.SUPPLIER), validate(createClaimSchema), (req, res, next) =>
   claimController.create(req, res, next)
 );
-claimRoutes.put('/:id', (req, res, next) => claimController.update(req, res, next));
+claimRoutes.put('/:id', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => claimController.update(req, res, next));

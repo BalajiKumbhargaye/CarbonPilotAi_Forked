@@ -3,6 +3,8 @@ import {
   OrganizationType,
   UserStatus,
   OrganizationStatus,
+  SupplierStatus,
+  ProductStatus,
   DocumentType,
   DocumentStatus,
   ClaimStatus,
@@ -71,6 +73,13 @@ export interface IOrganization {
   gstin?: string;
   industry?: string;
   address?: string;
+  legalName?: string;
+  country?: string;
+  city?: string;
+  contactPerson?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  description?: string;
   website?: string;
   status: OrganizationStatus;
   createdAt: string | Date;
@@ -97,7 +106,7 @@ export interface ISupplierRelationship {
   _id: string;
   customerOrganizationId: string;
   supplierOrganizationId: string;
-  status: 'ACTIVE' | 'PENDING' | 'TERMINATED';
+  status: SupplierStatus;
   sharedDataPermissions: ISharedDataPermissions;
   createdAt: string | Date;
   updatedAt: string | Date;
@@ -107,6 +116,9 @@ export interface ISupplier {
   _id: string;
   organizationId: string;
   industry: string;
+  category?: string;
+  notes?: string;
+  status: SupplierStatus;
   verificationStatus: VerificationStatus;
   dataCompleteness: number; // 0 to 100 percentage
   evidenceSupport: number; // 0 to 100 percentage
@@ -127,11 +139,23 @@ export interface IProduct {
   _id: string;
   supplierId: string;
   name: string;
-  productCode: string;
+  productCode?: string;
   category: string;
+  categoryId?: string;
+  unit: string;
   description?: string;
+  status: ProductStatus;
   productionFacilityIds: string[];
   carbonData?: IProductCarbonData;
+  createdAt: string | Date;
+  updatedAt: string | Date;
+}
+
+export interface IProductCategory {
+  _id: string;
+  name: string;
+  slug: string;
+  isActive: boolean;
   createdAt: string | Date;
   updatedAt: string | Date;
 }
@@ -150,13 +174,20 @@ export interface IFacility {
 export interface IPurchase {
   _id: string;
   customerOrganizationId: string;
+  supplierId: string;
   supplierOrganizationId: string;
   productId: string;
   purchaseOrderId?: string;
   invoiceId?: string;
   quantity: number;
   unit: string;
+  unitPrice: string;
+  totalAmount: string;
+  currency: string;
   purchaseDate: string | Date;
+  referenceNumber?: string;
+  notes?: string;
+  reportingPeriod?: string;
   carbonCalculationId?: string;
   status: PurchaseStatus;
   createdAt: string | Date;
