@@ -13,6 +13,7 @@ import {
   TrendingDown,
   Building2,
   FileCheck,
+  ClipboardList,
 } from 'lucide-react';
 import { MetricCard } from '@/components/ui/MetricCard';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card';
@@ -21,12 +22,15 @@ import { Progress } from '@/components/ui/Progress';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
 import { getPurchaseSummary, type PurchaseSummary } from '@/lib/procurement';
+import { getDataRequestSummary, type DataRequestSummary } from '@/lib/data-requests';
 
 export default function CustomerDashboardPage() {
   const [procurementSummary, setProcurementSummary] = useState<PurchaseSummary | null>(null);
+  const [dataRequestSummary, setDataRequestSummary] = useState<DataRequestSummary | null>(null);
 
   useEffect(() => {
     getPurchaseSummary().then(setProcurementSummary).catch(() => setProcurementSummary(null));
+    getDataRequestSummary().then(setDataRequestSummary).catch(() => setDataRequestSummary(null));
   }, []);
 
   const purchaseValue = procurementSummary?.totalPurchaseValueByCurrency.length
@@ -112,6 +116,11 @@ export default function CustomerDashboardPage() {
         />
       </div>
 
+      <section className="border-y border-slate-200 py-4" aria-labelledby="data-request-summary-title">
+        <div className="mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><ClipboardList className="h-4 w-4 text-emerald-700" /><h2 id="data-request-summary-title" className="text-sm font-semibold text-slate-900">Data Requests</h2></div><Link href="/customer/data-requests" className="text-xs font-semibold text-emerald-800 hover:underline">View requests</Link></div>
+        <div className="grid grid-cols-2 gap-y-3 sm:grid-cols-5"><div><p className="text-xs text-slate-500">Total</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.total ?? '—'}</p></div><div><p className="text-xs text-slate-500">Sent</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SENT ?? '—'}</p></div><div><p className="text-xs text-slate-500">In progress</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.IN_PROGRESS ?? '—'}</p></div><div><p className="text-xs text-slate-500">Submitted</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SUBMITTED ?? '—'}</p></div><div><p className="text-xs text-slate-500">Needs clarification</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.NEEDS_CLARIFICATION ?? '—'}</p></div></div>
+      </section>
+
       {/* Verification Health & Data Completeness Split */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Verification Status Breakdown */}
@@ -194,8 +203,8 @@ export default function CustomerDashboardPage() {
             <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-800/50">
               <Clock className="h-4 w-4 text-slate-500 shrink-0 mt-0.5" />
               <div>
-                <p className="font-semibold text-slate-800 dark:text-slate-200">2 Pending Data Requests</p>
-                <p className="text-slate-500 mt-0.5">Nexa Polymer Solutions questionnaire in progress.</p>
+                <p className="font-semibold text-slate-800 dark:text-slate-200">{dataRequestSummary?.total ?? '—'} Data Requests</p>
+                <p className="text-slate-500 mt-0.5">{dataRequestSummary?.counts.IN_PROGRESS ?? 0} in progress · {dataRequestSummary?.counts.SUBMITTED ?? 0} submitted · {dataRequestSummary?.counts.NEEDS_CLARIFICATION ?? 0} need clarification.</p>
               </div>
             </div>
           </CardContent>

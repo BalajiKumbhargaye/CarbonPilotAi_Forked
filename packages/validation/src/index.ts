@@ -9,6 +9,8 @@ import {
   AnomalyStatus,
   CertificateStatus,
   DataRequestStatus,
+  DataRequestResponseType,
+  QuestionnaireCategory,
   PurchaseStatus,
   SupplierStatus,
   ProductStatus,
@@ -223,6 +225,29 @@ export const createPurchaseOrderSchema = z.object({
   documentId: z.string().optional(),
 });
 
+const procurementDecimal = z.union([
+  z.number().finite(),
+  z.string().trim().regex(/^\d+(?:\.\d{1,8})?$/, 'Enter a valid decimal amount'),
+]).transform(String);
+const procurementMoney = z.union([
+  z.number().finite(),
+  z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/, 'Enter a valid currency amount'),
+]).transform(String);
+
+export const procurementDocumentReviewSchema = z.object({
+  supplierId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid supplier'),
+  productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
+  documentNumber: z.string().trim().min(1).max(100),
+  documentDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid document date'),
+  quantity: procurementDecimal.refine((value) => Number(value) > 0, 'Quantity must be greater than 0'),
+  unit: z.string().trim().min(1).max(40),
+  unitPrice: procurementDecimal.refine((value) => Number(value) >= 0, 'Unit price cannot be negative'),
+  totalAmount: procurementMoney.refine((value) => Number(value) >= 0, 'Total cannot be negative'),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code'),
+  purchaseOrderNumber: z.string().trim().max(100).optional(),
+  expectedDeliveryDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid expected delivery date').optional(),
+});
+
 /**
  * Document Schemas
  */
@@ -279,12 +304,43 @@ export const resolveAnomalySchema = z.object({
  * Data Request & Questionnaire Schemas
  */
 export const createDataRequestSchema = z.object({
-  supplierOrganizationId: z.string().min(1, 'Supplier organization is required'),
-  title: z.string().min(1, 'Title is required'),
-  description: z.string().min(1, 'Description is required'),
-  deadline: z.string().or(z.date()),
-  status: z.nativeEnum(DataRequestStatus).default(DataRequestStatus.SENT),
-  requiredFields: z.array(z.string()).min(1, 'At least one required field is specified'),
+  supplierId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid connected supplier'),
+  title: z.string().trim().min(1, 'Title is required').max(160),
+  description: z.string().trim().max(2000).default(''),
+  deadline: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid due date').optional(),
+  productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product').optional().or(z.literal('')),
+  templateId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid questionnaire template').optional(),
+  allowPartialSubmission: z.boolean().default(false),
+  requestedItems: z.array(z.object({
+    key: z.string().trim().regex(/^[a-z][a-z0-9_-]{1,99}$/i).optional(),
+    label: z.string().trim().min(1, 'Requirement name is required').max(160),
+    description: z.string().trim().max(1000).optional(),
+    responseType: z.nativeEnum(DataRequestResponseType),
+    category: z.nativeEnum(QuestionnaireCategory).default(QuestionnaireCategory.GENERAL_SUSTAINABILITY),
+    required: z.boolean().default(true),
+    requiresEvidence: z.boolean().default(false),
+    unit: z.string().trim().max(40).optional(),
+    options: z.array(z.string().trim().min(1).max(160)).max(40).optional(),
+    conditions: z.array(z.object({
+      questionKey: z.string().trim().min(2).max(100),
+      operator: z.enum(['EQUALS', 'NOT_EQUALS']).default('EQUALS'),
+      value: z.union([z.string(), z.number().finite(), z.boolean()]),
+    })).max(10).optional(),
+    order: z.number().int().min(0).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })).min(1, 'Add at least one requirement').max(40),
+});
+
+export const updateDataRequestSchema = createDataRequestSchema.omit({ supplierId: true }).partial();
+
+export const saveDataRequestItemResponseSchema = z.object({
+  value: z.union([z.string(), z.number().finite(), z.boolean(), z.array(z.string())]),
+  unit: z.string().trim().max(40).optional(),
+});
+
+export const requestClarificationSchema = z.object({
+  message: z.string().trim().min(1, 'Clarification message is required').max(2000),
+  itemIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)).optional(),
 });
 
 export const submitQuestionResponseSchema = z.object({

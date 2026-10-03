@@ -35,6 +35,7 @@ const InvoiceSchema = new Schema<IInvoiceDocument>(
     totalAmount: { type: Number, required: true },
     items: [InvoiceItemSchema],
     documentId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'Document' },
+    purchaseOrderId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'PurchaseOrder' },
     extractionStatus: {
       type: String,
       enum: Object.values(ExtractionStatus),

@@ -16,6 +16,8 @@ import {
   AnomalyStatus,
   CertificateStatus,
   DataRequestStatus,
+  DataRequestResponseType,
+  QuestionnaireCategory,
   QuestionResponseStatus,
   PurchaseStatus,
   ExtractionStatus,
@@ -213,6 +215,7 @@ export interface IInvoice {
   totalAmount: number;
   items: IInvoiceItem[];
   documentId?: string;
+  purchaseOrderId?: string;
   extractionStatus: ExtractionStatus;
   createdAt: string | Date;
   updatedAt: string | Date;
@@ -224,6 +227,7 @@ export interface IPurchaseOrder {
   supplierOrganizationId: string;
   orderNumber: string;
   orderDate: string | Date;
+  expectedDeliveryDate?: string | Date;
   currency: string;
   totalAmount: number;
   items: IInvoiceItem[];
@@ -245,8 +249,32 @@ export interface IDocument {
   fileSize: number;
   reportingPeriod?: string;
   status: DocumentStatus;
+  processingError?: string;
+  reviewData?: IProcurementReviewData;
+  invoiceId?: string;
+  purchaseOrderId?: string;
+  purchaseId?: string;
+  dataRequestId?: string;
+  requestedItemId?: string;
+  reviewedBy?: string;
+  reviewedAt?: string | Date;
   uploadedAt: string | Date;
   updatedAt: string | Date;
+}
+
+export interface IProcurementReviewData {
+  supplierId: string;
+  productId: string;
+  documentNumber: string;
+  documentDate: string | Date;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  totalAmount: string;
+  currency: string;
+  purchaseOrderNumber?: string;
+  expectedDeliveryDate?: string | Date;
+  source: 'MANUAL' | 'EXTRACTED';
 }
 
 export interface IExtractionField {
@@ -335,13 +363,56 @@ export interface IDataRequest {
   _id: string;
   customerOrganizationId: string;
   supplierOrganizationId: string;
+  createdBy: string;
   title: string;
   description: string;
-  deadline: string | Date;
+  deadline?: string | Date;
   status: DataRequestStatus;
+  productId?: string;
+  templateId?: string;
+  requestedItems: IDataRequestItem[];
+  allowPartialSubmission: boolean;
   requiredFields: string[];
   foundFields: string[];
   missingFields: string[];
+  clarificationMessage?: string;
+  clarificationItemIds?: string[];
+  lastSubmittedAt?: string | Date;
+  createdAt: string | Date;
+  updatedAt: string | Date;
+}
+
+export interface IDataRequestItem {
+  _id: string;
+  key: string;
+  label: string;
+  description?: string;
+  responseType: DataRequestResponseType;
+  category: QuestionnaireCategory;
+  required: boolean;
+  requiresEvidence?: boolean;
+  unit?: string;
+  options?: string[];
+  conditions?: IDataRequestCondition[];
+  order: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface IDataRequestCondition {
+  questionKey: string;
+  operator: 'EQUALS' | 'NOT_EQUALS';
+  value: string | number | boolean;
+}
+
+export interface IQuestionnaireTemplate {
+  _id: string;
+  name: string;
+  description: string;
+  category: QuestionnaireCategory;
+  productCategories: string[];
+  supplierIndustries: string[];
+  questions: Array<Omit<IDataRequestItem, '_id'>>;
+  isActive: boolean;
   createdAt: string | Date;
   updatedAt: string | Date;
 }
@@ -350,13 +421,16 @@ export interface IQuestionResponse {
   _id: string;
   dataRequestId: string;
   supplierId: string;
+  requestedItemId: string;
   question: string;
   field: string;
-  answer: string;
+  answer?: string;
+  value?: string | number | boolean | string[];
   unit?: string;
   evidenceDocumentId?: string;
+  evidenceDocumentIds?: string[];
   status: QuestionResponseStatus;
-  submittedAt: string | Date;
+  submittedAt?: string | Date;
 }
 
 export interface ICertificateExternalVerification {

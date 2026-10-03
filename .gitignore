@@ -36,5 +36,6 @@ coverage/
 
 # Local scratch and uploads
 uploads/
+private-uploads/
 scratch/
 tmp/

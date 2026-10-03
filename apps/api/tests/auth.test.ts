@@ -8,6 +8,10 @@ import { procurementService } from '../src/modules/procurement';
 import { facilityService } from '../src/modules/facilities';
 import { logout } from '../../web/src/lib/auth';
 
+vi.mock('../src/config/database', () => ({
+  isDatabaseConnected: () => true,
+}));
+
 const store = vi.hoisted(() => ({
   users: [] as any[],
   organizations: [] as any[],

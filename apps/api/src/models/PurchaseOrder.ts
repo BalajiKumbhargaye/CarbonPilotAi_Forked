@@ -31,6 +31,7 @@ const PurchaseOrderSchema = new Schema<IPurchaseOrderDocument>(
     },
     orderNumber: { type: String, required: true, trim: true },
     orderDate: { type: Date, required: true },
+    expectedDeliveryDate: { type: Date },
     currency: { type: String, required: true, default: 'USD' },
     totalAmount: { type: Number, required: true },
     items: [PurchaseOrderItemSchema],

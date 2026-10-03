@@ -144,7 +144,9 @@ export class PurchasesService {
       data.unit
     );
     const unitPrice = data.unitPrice as string;
-    const totalAmount = this.calculateTotal(data.quantity as string, unitPrice);
+    const totalAmount = data.totalAmount === undefined
+      ? this.calculateTotal(data.quantity as string, unitPrice)
+      : this.normalizeTotalAmount(data.totalAmount);
     const referenceNumber = data.referenceNumber?.trim() || undefined;
 
     try {
@@ -161,6 +163,8 @@ export class PurchasesService {
         purchaseDate: new Date(data.purchaseDate),
         referenceNumber,
         notes: data.notes,
+        purchaseOrderId: data.purchaseOrderId,
+        invoiceId: data.invoiceId,
         reportingPeriod: this.getReportingPeriod(new Date(data.purchaseDate)),
         status: data.status || PurchaseStatus.CONFIRMED,
       });
@@ -310,6 +314,14 @@ export class PurchasesService {
     const denominator = DECIMAL_SCALE * DECIMAL_SCALE;
     const cents = (numerator + denominator / 2n) / denominator;
     return this.fromMoneyMinorUnits(cents);
+  }
+
+  private normalizeTotalAmount(value: unknown) {
+    const amount = String(value);
+    if (!/^\d+(?:\.\d{1,2})?$/.test(amount)) {
+      throw new AppError('Enter a valid total amount', 400, 'INVALID_AMOUNT');
+    }
+    return this.fromMoneyMinorUnits(this.toMoneyMinorUnits(amount));
   }
 
   private toScaledInteger(value: string) {

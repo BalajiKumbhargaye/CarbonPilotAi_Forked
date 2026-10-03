@@ -1,14 +1,21 @@
 'use client';
 
-import React from 'react';
-import { ArrowRight, Building2, CheckCircle2, Factory, Leaf, PackageCheck, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowRight, Building2, CheckCircle2, ClipboardList, Factory, Leaf, PackageCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import { MetricCard } from '@/components/ui/MetricCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+import { getDataRequestSummary, type DataRequestSummary } from '@/lib/data-requests';
 
 export default function SupplierDashboardPage() {
+  const [dataRequestSummary, setDataRequestSummary] = useState<DataRequestSummary | null>(null);
+
+  useEffect(() => {
+    getDataRequestSummary().then(setDataRequestSummary).catch(() => setDataRequestSummary(null));
+  }, []);
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -38,11 +45,16 @@ export default function SupplierDashboardPage() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <MetricCard title="Active Customers" value="14" change="+2 this quarter" isPositive icon={Building2} />
-        <MetricCard title="Pending Requests" value="6" change="2 due this week" isPositive={false} icon={PackageCheck} />
+        <MetricCard title="Pending Requests" value={dataRequestSummary ? String((dataRequestSummary.counts.SENT || 0) + (dataRequestSummary.counts.NEEDS_CLARIFICATION || 0)) : '—'} change="Awaiting supplier response" isPositive={false} icon={PackageCheck} />
         <MetricCard title="Evidence Coverage" value="81%" change="+7% in 30 days" isPositive icon={ShieldCheck} />
         <MetricCard title="Carbon Data" value="42" change="records updated" isPositive icon={Leaf} />
         <MetricCard title="Verification Status" value="Healthy" change="No critical issues" isPositive icon={CheckCircle2} />
       </div>
+
+      <section className="border-y border-slate-200 py-4" aria-labelledby="my-data-requests-title">
+        <div className="mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><ClipboardList className="h-4 w-4 text-teal-700" /><h2 id="my-data-requests-title" className="text-sm font-semibold text-slate-900">My Data Requests</h2></div><Link href="/supplier/data-requests" className="text-xs font-semibold text-teal-800 hover:underline">Open requests</Link></div>
+        <div className="grid grid-cols-2 gap-y-3 sm:grid-cols-4"><div><p className="text-xs text-slate-500">Pending</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SENT ?? '—'}</p></div><div><p className="text-xs text-slate-500">In progress</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.IN_PROGRESS ?? '—'}</p></div><div><p className="text-xs text-slate-500">Submitted</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SUBMITTED ?? '—'}</p></div><div><p className="text-xs text-slate-500">Clarification required</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.NEEDS_CLARIFICATION ?? '—'}</p></div></div>
+      </section>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">

@@ -28,8 +28,20 @@ export async function connectDatabase(): Promise<void> {
   }
 }
 
+export function isDatabaseConnected(): boolean {
+  return isConnected && mongoose.connection.readyState === 1;
+}
+
 async function ensureProductIndexes() {
-  const indexes = await ProductModel.collection.indexes();
+  const database = mongoose.connection.db;
+  if (!database) {
+    throw new Error('MongoDB database connection is not initialized');
+  }
+
+  const collectionExists = await database
+    .listCollections({ name: ProductModel.collection.collectionName }, { nameOnly: true })
+    .hasNext();
+  const indexes = collectionExists ? await ProductModel.collection.indexes() : [];
   const oldProductCodeIndex = indexes.find((index) =>
     index.name === 'supplierId_1_productCode_1' && !index.partialFilterExpression
   );

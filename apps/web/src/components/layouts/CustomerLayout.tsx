@@ -45,6 +45,7 @@ const customerNav: NavSection[] = [
     title: 'PROCUREMENT',
     items: [
       { label: 'Purchases', href: '/customer/purchases', icon: ShoppingCart },
+      { label: 'Procurement Documents', href: '/customer/procurement-documents', icon: FileText },
       { label: 'Invoices', href: '/customer/invoices', icon: FileSpreadsheet },
       { label: 'Purchase Orders', href: '/customer/purchase-orders', icon: FileCheck2 },
     ],

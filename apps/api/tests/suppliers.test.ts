@@ -5,6 +5,8 @@ import jwt from 'jsonwebtoken';
 import { createApp } from '../src/app';
 import { ENV } from '../src/config/env';
 
+vi.mock('../src/config/database', () => ({ isDatabaseConnected: () => true }));
+
 const store = vi.hoisted(() => ({
   organizations: [] as any[],
   suppliers: [] as any[],

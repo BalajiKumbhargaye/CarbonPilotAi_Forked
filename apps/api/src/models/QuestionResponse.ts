@@ -17,21 +17,29 @@ const QuestionResponseSchema = new Schema<IQuestionResponseDocument>(
       required: true,
       index: true,
     },
+    requestedItemId: { type: Schema.Types.ObjectId as unknown as typeof String, required: true, index: true },
     question: { type: String, required: true },
-    field: { type: String, required: true },
-    answer: { type: String, required: true },
+    field: { type: String, required: true, lowercase: true, trim: true },
+    answer: { type: String },
+    value: { type: Schema.Types.Mixed },
     unit: { type: String },
     evidenceDocumentId: {
       type: Schema.Types.ObjectId as unknown as typeof String,
       ref: 'Document',
     },
+    evidenceDocumentIds: [{ type: Schema.Types.ObjectId, ref: 'Document' }],
     status: {
       type: String,
       enum: Object.values(QuestionResponseStatus),
-      default: QuestionResponseStatus.SUBMITTED,
+      default: QuestionResponseStatus.DRAFT,
     },
-    submittedAt: { type: Date, default: Date.now },
+    submittedAt: { type: Date },
   }
+);
+
+QuestionResponseSchema.index(
+  { dataRequestId: 1, supplierId: 1, requestedItemId: 1 },
+  { unique: true, partialFilterExpression: { requestedItemId: { $type: 'objectId' } } }
 );
 
 export const QuestionResponseModel = mongoose.model<IQuestionResponseDocument>(

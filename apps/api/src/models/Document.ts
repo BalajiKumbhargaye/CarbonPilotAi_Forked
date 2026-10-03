@@ -1,7 +1,10 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { IDocument, DocumentType, DocumentStatus } from '@carbonpilot/shared';
+import { IDocument, IProcurementReviewData, DocumentType, DocumentStatus } from '@carbonpilot/shared';
 
-export interface IDocumentModel extends Omit<IDocument, '_id'>, Document {}
+export interface IDocumentModel extends Omit<IDocument, '_id'>, Document {
+  storageKey?: string;
+  reviewData?: IProcurementReviewData;
+}
 
 const DocumentSchema = new Schema<IDocumentModel>(
   {
@@ -28,9 +31,19 @@ const DocumentSchema = new Schema<IDocumentModel>(
     },
     filename: { type: String, required: true },
     fileUrl: { type: String, required: true },
+    storageKey: { type: String, select: false },
     mimeType: { type: String, required: true },
     fileSize: { type: Number, required: true },
     reportingPeriod: { type: String },
+    processingError: { type: String },
+    reviewData: { type: Schema.Types.Mixed },
+    invoiceId: { type: Schema.Types.ObjectId, ref: 'Invoice' },
+    purchaseOrderId: { type: Schema.Types.ObjectId, ref: 'PurchaseOrder' },
+    purchaseId: { type: Schema.Types.ObjectId, ref: 'Purchase' },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    reviewedAt: { type: Date },
+    dataRequestId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'DataRequest', index: true },
+    requestedItemId: { type: Schema.Types.ObjectId as unknown as typeof String, index: true },
     status: {
       type: String,
       enum: Object.values(DocumentStatus),

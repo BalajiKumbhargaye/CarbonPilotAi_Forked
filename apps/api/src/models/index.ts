@@ -17,6 +17,7 @@ export * from './EvidenceCheck';
 export * from './VerificationRun';
 export * from './Anomaly';
 export * from './DataRequest';
+export * from './QuestionnaireTemplate';
 export * from './QuestionResponse';
 export * from './Certificate';
 export * from './CarbonFactor';

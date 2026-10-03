@@ -5,6 +5,8 @@ import jwt from 'jsonwebtoken';
 import { createApp } from '../src/app';
 import { ENV } from '../src/config/env';
 
+vi.mock('../src/config/database', () => ({ isDatabaseConnected: () => true }));
+
 const ids = {
   buyerA: '100000000000000000000001',
   buyerB: '100000000000000000000002',
