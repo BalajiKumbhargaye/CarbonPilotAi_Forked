@@ -13,8 +13,10 @@ import { SupplierForm } from '@/components/suppliers/SupplierForm';
 import { getPurchases, type PurchaseItem } from '@/lib/procurement';
 import {
   getSupplier,
+  getSupplierCarbonProfile,
   updateSupplier,
   updateSupplierStatus,
+  type SupplierCarbonProfile,
   type SupplierDirectoryItem,
   type SupplierInput,
   type SupplierStatus,
@@ -41,6 +43,7 @@ export default function SupplierProfilePage({ params }: { params: { id: string }
   const [retryCount, setRetryCount] = useState(0);
   const [purchases, setPurchases] = useState<PurchaseItem[]>([]);
   const [historyError, setHistoryError] = useState('');
+  const [carbonProfile, setCarbonProfile] = useState<SupplierCarbonProfile | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -52,6 +55,11 @@ export default function SupplierProfilePage({ params }: { params: { id: string }
       if (active) setError('Unable to load supplier. Please try again.');
     }).finally(() => {
       if (active) setLoading(false);
+    });
+    getSupplierCarbonProfile(params.id).then((result) => {
+      if (active) setCarbonProfile(result);
+    }).catch(() => {
+      if (active) setCarbonProfile(null);
     });
     getPurchases({ supplierId: params.id }).then((items) => {
       if (active) setPurchases(items);
@@ -176,10 +184,68 @@ export default function SupplierProfilePage({ params }: { params: { id: string }
         </Card>
       </section>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <EmptySection title="Carbon">Carbon data will appear here once supplier carbon records are available.</EmptySection>
-        <EmptySection title="Evidence">No evidence submitted yet.</EmptySection>
-      </div>
+      <section aria-labelledby="carbon-profile" className="space-y-3">
+        <h2 id="carbon-profile" className="text-base font-semibold text-slate-900 dark:text-slate-100">Carbon &amp; Sustainability Profile</h2>
+        {carbonProfile ? (
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <InfoCard label="Products with carbon data" value={String(carbonProfile.carbonData?.numberOfProductsWithCarbonData ?? 0)} />
+              <InfoCard label="Products missing carbon data" value={String(carbonProfile.carbonData?.productsWithMissingCarbonData ?? 0)} />
+              <InfoCard label="Completed data requests" value={`${carbonProfile.dataCompleteness?.submitted ?? 0}/${carbonProfile.dataCompleteness?.requested ?? 0}`} />
+              <InfoCard label="Completeness" value={`${carbonProfile.dataCompleteness?.completeness ?? 0}%`} />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Product-level carbon summary</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {carbonProfile.productSummary?.length ? (
+                    <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Product</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Carbon intensity</th><th className="px-4 py-3">Evidence</th></tr></thead><tbody className="divide-y divide-slate-200 dark:divide-slate-800">{carbonProfile.productSummary.map((item) => <tr key={item.product}><td className="px-4 py-3 font-medium">{item.product}</td><td className="px-4 py-3">{item.unit}</td><td className="px-4 py-3">{item.carbonIntensity != null ? `${item.carbonIntensity} ${item.functionalUnit}` : 'Not available'}</td><td className="px-4 py-3"><StatusBadge status={item.evidenceStatus === 'NOT_AVAILABLE' ? 'Pending' : item.evidenceStatus} /></td></tr>)}</tbody></table></div>
+                  ) : <EmptyState>No carbon data available for this supplier.</EmptyState>}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Certificate summary</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {carbonProfile.certificateSummary?.length ? (
+                    <div className="overflow-x-auto"><table className="w-full min-w-[560px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Certificate</th><th className="px-4 py-3">Issuer</th><th className="px-4 py-3">Expiry</th><th className="px-4 py-3">Status</th></tr></thead><tbody className="divide-y divide-slate-200 dark:divide-slate-800">{carbonProfile.certificateSummary.map((certificate) => <tr key={`${certificate.certificateNumber ?? 'certificate'}-${certificate.issuer ?? 'issuer'}`}><td className="px-4 py-3">{String(certificate.certificate ?? certificate.certificateNumber ?? 'Certificate')}</td><td className="px-4 py-3">{String(certificate.issuer ?? '—')}</td><td className="px-4 py-3">{certificate.expiryDate ? new Date(String(certificate.expiryDate)).toLocaleDateString() : '—'}</td><td className="px-4 py-3"><StatusBadge status={String(certificate.status ?? 'Pending')} /></td></tr>)}</tbody></table></div>
+                  ) : <EmptyState>No certificates recorded.</EmptyState>}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Data completeness</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center justify-between text-sm"><span>Requested</span><span className="font-medium">{carbonProfile.dataCompleteness?.requested ?? 0}</span></div>
+                  <div className="flex items-center justify-between text-sm"><span>Submitted</span><span className="font-medium">{carbonProfile.dataCompleteness?.submitted ?? 0}</span></div>
+                  <div className="flex items-center justify-between text-sm"><span>Missing</span><span className="font-medium">{carbonProfile.dataCompleteness?.missing ?? 0}</span></div>
+                  <div className="flex items-center justify-between text-sm"><span>Completeness</span><span className="font-medium">{carbonProfile.dataCompleteness?.completeness ?? 0}%</span></div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Questionnaire summary</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {carbonProfile.questionnaireSummary?.length ? carbonProfile.questionnaireSummary.map((item) => <div key={item.category} className="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm dark:border-slate-800"><span className="font-medium">{item.category}</span><span>{item.status === 'COMPLETE' ? '✓ Complete' : item.status === 'MISSING_REQUIRED_RESPONSE' ? '⚠ Missing required response' : item.status === 'EXPIRED_CERTIFICATE' ? '⚠ Expired certificate' : 'Not requested'}</span></div>) : <EmptyState>No questionnaire data available.</EmptyState>}
+                </CardContent>
+              </Card>
+            </div>
+          </>
+        ) : (
+          <EmptySection title="Carbon & Sustainability Profile">Carbon data will appear here once supplier carbon records are available.</EmptySection>
+        )}
+      </section>
 
       <Modal isOpen={editing} onClose={() => setEditing(false)} title="Edit supplier" description="Update supplier details connected to your organization." className="max-h-[90vh] max-w-3xl overflow-y-auto">
         <SupplierForm key={supplier._id} supplier={supplier} onSubmit={save} isSubmitting={saving} submitLabel="Save changes" />
@@ -190,6 +256,17 @@ export default function SupplierProfilePage({ params }: { params: { id: string }
 
 function OverviewField({ label, value }: { label: string; value?: string }) {
   return <div><p className="text-xs font-medium uppercase text-slate-500">{label}</p><p className="mt-1 text-sm text-slate-800 dark:text-slate-200">{value || '—'}</p></div>;
+}
+
+function InfoCard({ label, value }: { label: string; value: string }) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+        <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-slate-100">{value}</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function EmptyState({ children }: { children: React.ReactNode }) {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { PRODUCT_UNITS } from '@carbonpilot/shared';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
@@ -14,7 +15,7 @@ import {
   type ProductStatus,
 } from '@/lib/products';
 
-const commonUnits = ['kg', 'ton', 'gram', 'liter', 'piece', 'unit', 'meter', 'square_meter', 'cubic_meter'];
+type ProductFormValues = Omit<ProductInput, 'sellingPrice'> & { sellingPrice: string };
 
 export function ProductForm({
   product,
@@ -35,7 +36,7 @@ export function ProductForm({
   submitLabel: string;
   onSubmit: (payload: ProductInput) => Promise<void>;
 }) {
-  const [values, setValues] = useState<ProductInput>({ name: '', productCode: '', categoryId: '', unit: '', description: '', status: 'ACTIVE' });
+  const [values, setValues] = useState<ProductFormValues>({ name: '', productCode: '', categoryId: '', unit: '', sellingPrice: '', currency: '', description: '', status: 'ACTIVE' });
   const [newCategory, setNewCategory] = useState('');
   const [categoryError, setCategoryError] = useState('');
   const [addingCategory, setAddingCategory] = useState(false);
@@ -47,9 +48,11 @@ export function ProductForm({
       productCode: product.productCode || '',
       categoryId: product.categoryId || '',
       unit: product.unit || '',
+      sellingPrice: product.sellingPrice === undefined ? '' : String(product.sellingPrice),
+      currency: product.currency || '',
       description: product.description || '',
       status: product.status,
-    } : { name: '', productCode: '', categoryId: categories[0]?._id || '', unit: '', description: '', status: 'ACTIVE' });
+    } : { name: '', productCode: '', categoryId: categories[0]?._id || '', unit: '', sellingPrice: '', currency: '', description: '', status: 'ACTIVE' });
   }, [product]);
 
   useEffect(() => {
@@ -58,7 +61,7 @@ export function ProductForm({
     }
   }, [categories, product, values.categoryId]);
 
-  const update = (field: keyof ProductInput, value: string) => {
+  const update = (field: keyof ProductFormValues, value: string) => {
     setValues((current) => ({ ...current, [field]: value }));
   };
 
@@ -79,14 +82,20 @@ export function ProductForm({
     }
   };
 
-  const units = values.unit && !commonUnits.includes(values.unit) ? [...commonUnits, values.unit] : commonUnits;
-
   return (
     <form
       className="space-y-4"
       onSubmit={async (event) => {
         event.preventDefault();
-        await onSubmit({ ...values, supplierId: supplierMode ? undefined : values.supplierId });
+        const { sellingPrice, currency, ...details } = values;
+        await onSubmit({
+          ...details,
+          ...(supplierMode ? {
+            sellingPrice: sellingPrice === '' ? undefined : Number(sellingPrice),
+            currency: currency || undefined,
+          } : {}),
+          supplierId: supplierMode ? undefined : values.supplierId,
+        });
       }}
     >
       {!supplierMode && !product && (
@@ -116,10 +125,37 @@ export function ProductForm({
           </div>
           {categoryError && <p role="alert" className="text-xs text-rose-700">{categoryError}</p>}
         </div>
-        <div>
-          <Input label="Unit" list="product-units" value={values.unit} onChange={(event) => update('unit', event.target.value)} placeholder="e.g. kg" required />
-          <datalist id="product-units">{units.map((unit) => <option key={unit} value={unit} />)}</datalist>
-        </div>
+        <Select
+          label="Unit"
+          value={values.unit}
+          onChange={(event) => update('unit', event.target.value)}
+          options={[{ label: 'Select a unit', value: '' }, ...PRODUCT_UNITS.map((unit) => ({ label: unit, value: unit }))]}
+          required
+        />
+        {supplierMode && <>
+          <Input
+            label="Selling price per unit"
+            type="number"
+            min="0"
+            step="0.00000001"
+            value={values.sellingPrice}
+            onChange={(event) => update('sellingPrice', event.target.value)}
+            required
+          />
+          <Select
+            label="Currency"
+            value={values.currency || ''}
+            onChange={(event) => update('currency', event.target.value)}
+            options={[
+              { label: 'Select currency', value: '' },
+              { label: 'INR', value: 'INR' },
+              { label: 'USD', value: 'USD' },
+              { label: 'EUR', value: 'EUR' },
+              { label: 'GBP', value: 'GBP' },
+            ]}
+            required
+          />
+        </>}
         {product && (
           <Select
             label="Status"

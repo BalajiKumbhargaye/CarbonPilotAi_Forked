@@ -4,12 +4,15 @@ import { sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createAnomalySchema, resolveAnomalySchema } from '@carbonpilot/validation';
-import { AnomalyStatus } from '@carbonpilot/shared';
+import { AnomalyStatus, OrganizationType } from '@carbonpilot/shared';
+import { AuthUserPayload } from '../../middleware/auth.middleware';
+import { AppError } from '../../utils/response';
+import { getAccessibleSupplierIds } from '../verification/access';
 
 export class AnomalyService {
-  async getAll(supplierId?: string, status?: string) {
-    const filter: Record<string, unknown> = {};
-    if (supplierId) filter.supplierId = supplierId;
+  async getAll(user: AuthUserPayload, status?: string) {
+    const supplierIds = await getAccessibleSupplierIds(user);
+    const filter: Record<string, unknown> = { supplierId: { $in: supplierIds } };
     if (status) filter.status = status;
     return AnomalyModel.find(filter)
       .populate('supplierId')
@@ -17,17 +20,34 @@ export class AnomalyService {
       .sort({ detectedAt: -1 });
   }
 
-  async getById(id: string) {
-    return AnomalyModel.findById(id).populate('supplierId').populate('documents');
+  async getById(id: string, user: AuthUserPayload) {
+    const anomaly = await AnomalyModel.findById(id).populate('documents');
+    if (!anomaly) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    const supplierIds = await getAccessibleSupplierIds(user);
+    if (!supplierIds.includes(anomaly.supplierId.toString())) {
+      throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    }
+    return anomaly;
   }
 
-  async create(data: Record<string, any>) {
+  async create(data: Record<string, any>, user: AuthUserPayload) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer can create an issue', 403, 'FORBIDDEN');
+    }
+    const supplierIds = await getAccessibleSupplierIds(user);
+    if (!supplierIds.includes(String(data.supplierId))) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
     return AnomalyModel.create(data);
   }
 
-  async resolve(id: string, note: string, status: AnomalyStatus.RESOLVED | AnomalyStatus.IGNORED) {
-    return AnomalyModel.findByIdAndUpdate(
-      id,
+  async resolve(id: string, note: string, status: AnomalyStatus.RESOLVED | AnomalyStatus.IGNORED, user: AuthUserPayload) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer can resolve or dismiss an issue', 403, 'FORBIDDEN');
+    }
+    const anomaly = await AnomalyModel.findById(id);
+    if (!anomaly) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    const supplierIds = await getAccessibleSupplierIds(user);
+    if (!supplierIds.includes(anomaly.supplierId.toString())) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    return AnomalyModel.findByIdAndUpdate(id,
       {
         status,
         resolutionNote: note,
@@ -43,10 +63,7 @@ export const anomalyService = new AnomalyService();
 export class AnomalyController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
-      const anomalies = await anomalyService.getAll(
-        req.query.supplierId as string,
-        req.query.status as string
-      );
+      const anomalies = await anomalyService.getAll(req.user!, req.query.status as string);
       return sendSuccess(res, anomalies);
     } catch (error) {
       next(error);
@@ -55,7 +72,7 @@ export class AnomalyController {
 
   async getById(req: Request, res: Response, next: NextFunction) {
     try {
-      const anomaly = await anomalyService.getById(req.params.id as string);
+      const anomaly = await anomalyService.getById(req.params.id as string, req.user!);
       return sendSuccess(res, anomaly);
     } catch (error) {
       next(error);
@@ -64,7 +81,7 @@ export class AnomalyController {
 
   async create(req: Request, res: Response, next: NextFunction) {
     try {
-      const anomaly = await anomalyService.create(req.body);
+      const anomaly = await anomalyService.create(req.body, req.user!);
       return sendSuccess(res, anomaly, 201);
     } catch (error) {
       next(error);
@@ -76,7 +93,8 @@ export class AnomalyController {
       const anomaly = await anomalyService.resolve(
         req.params.id as string,
         req.body.resolutionNote,
-        req.body.status
+        req.body.status,
+        req.user!
       );
       return sendSuccess(res, anomaly);
     } catch (error) {

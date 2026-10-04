@@ -17,6 +17,7 @@ const ids = {
   supplierB: '300000000000000000000002',
   productA: '400000000000000000000001',
   productB: '400000000000000000000002',
+  productC: '400000000000000000000003',
   purchaseB: '600000000000000000000001',
 };
 
@@ -133,8 +134,9 @@ beforeEach(() => {
   );
   store.relationships.push({ customerOrganizationId: ids.buyerA, supplierOrganizationId: ids.supplierOrgA, status: 'ACTIVE' });
   store.products.push(
-    { _id: ids.productA, supplierId: ids.supplierA, name: 'Automotive Steel Sheet', productCode: 'GS-AS-001', category: 'Steel', unit: 'kg', status: 'ACTIVE' },
-    { _id: ids.productB, supplierId: ids.supplierB, name: 'Plastic Housing', productCode: 'PT-PL-001', category: 'Plastic', unit: 'piece', status: 'ACTIVE' },
+    { _id: ids.productA, supplierId: ids.supplierA, name: 'Automotive Steel Sheet', productCode: 'GS-AS-001', category: 'Steel', unit: 'kg', sellingPrice: 72000, currency: 'INR', status: 'ACTIVE' },
+    { _id: ids.productB, supplierId: ids.supplierB, name: 'Plastic Housing', productCode: 'PT-PL-001', category: 'Plastic', unit: 'piece', sellingPrice: 3, currency: 'USD', status: 'ACTIVE' },
+    { _id: ids.productC, supplierId: ids.supplierA, name: 'Reusable Fastener', productCode: 'GF-RF-001', category: 'Steel', unit: 'piece', sellingPrice: 3, currency: 'USD', status: 'ACTIVE' },
   );
 });
 
@@ -153,15 +155,16 @@ const purchaseInput = {
   productId: ids.productA,
   quantity: '500',
   unit: 'kg',
-  unitPrice: '72000',
-  currency: 'inr',
+  unitPrice: '1',
+  totalAmount: '1',
+  currency: 'USD',
   purchaseDate: '2026-10-03',
   referenceNumber: 'PO-2026-001',
   notes: 'Quarterly steel order',
 };
 
 describe('buyer procurement management', () => {
-  it('creates purchases with backend-calculated totals and displays persisted data', async () => {
+  it('uses the supplier catalog price and currency instead of buyer-supplied values', async () => {
     const buyer = token(ids.buyerA);
     const createdResponse = await request('/api/procurement/purchases', buyer, { method: 'POST', body: JSON.stringify(purchaseInput) });
     const created = await createdResponse.json();
@@ -171,6 +174,7 @@ describe('buyer procurement management', () => {
     expect(createdResponse.status).toBe(201);
     expect(created.data.totalAmount).toBe('36000000.00');
     expect(created.data.currency).toBe('INR');
+    expect(created.data.unitPrice).toBe('72000');
     expect(created.data.status).toBe('CONFIRMED');
     expect(created.data.supplierOrganization.name).toBe('GreenForge Industries');
     expect(list.data).toHaveLength(1);
@@ -179,10 +183,32 @@ describe('buyer procurement management', () => {
   });
 
   it('rounds decimal totals using decimal-safe arithmetic', async () => {
+    store.products.find((product) => product._id === ids.productA).sellingPrice = 0.1;
     const response = await request('/api/procurement/purchases', token(ids.buyerA), {
-      method: 'POST', body: JSON.stringify({ ...purchaseInput, quantity: '0.1', unitPrice: '0.1', referenceNumber: 'PO-DECIMAL' }),
+      method: 'POST', body: JSON.stringify({ ...purchaseInput, quantity: '0.1', unitPrice: '999', referenceNumber: 'PO-DECIMAL' }),
     });
     expect((await response.json()).data.totalAmount).toBe('0.01');
+  });
+
+  it('normalizes small supplier prices without scientific notation', async () => {
+    store.products.find((product) => product._id === ids.productA).sellingPrice = 0.00000001;
+    const response = await request('/api/procurement/purchases', token(ids.buyerA), {
+      method: 'POST',
+      body: JSON.stringify({ ...purchaseInput, quantity: '100000000', referenceNumber: 'PO-MICRO-PRICE' }),
+    });
+    const body = await response.json();
+    const updated = await request(`/api/procurement/purchases/${body.data._id}`, token(ids.buyerA), {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity: '200000000' }),
+    });
+    const updatedBody = await updated.json();
+
+    expect(response.status).toBe(201);
+    expect(body.data.unitPrice).toBe('0.00000001');
+    expect(body.data.totalAmount).toBe('1.00');
+    expect(updated.status).toBe(200);
+    expect(updatedBody.data.unitPrice).toBe('0.00000001');
+    expect(updatedBody.data.totalAmount).toBe('2.00');
   });
 
   it('rejects unrelated suppliers, mismatched products, and incompatible units', async () => {
@@ -190,6 +216,7 @@ describe('buyer procurement management', () => {
     const unrelatedSupplier = await request('/api/procurement/purchases', buyer, {
       method: 'POST', body: JSON.stringify({ ...purchaseInput, supplierId: ids.supplierB, productId: ids.productB }),
     });
+
     const mismatchedProduct = await request('/api/procurement/purchases', buyer, {
       method: 'POST', body: JSON.stringify({ ...purchaseInput, productId: ids.productB }),
     });
@@ -200,6 +227,17 @@ describe('buyer procurement management', () => {
     expect(unrelatedSupplier.status).toBe(403);
     expect(mismatchedProduct.status).toBe(400);
     expect(mismatchedUnit.status).toBe(400);
+  });
+
+  it('rejects legacy products without a supplier-set price', async () => {
+    delete store.products.find((product) => product._id === ids.productA).sellingPrice;
+    const response = await request('/api/procurement/purchases', token(ids.buyerA), {
+      method: 'POST', body: JSON.stringify(purchaseInput),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error.code).toBe('PRODUCT_PRICE_UNAVAILABLE');
   });
 
   it('isolates list and detail reads by buyer organization', async () => {
@@ -230,13 +268,13 @@ describe('buyer procurement management', () => {
     await request('/api/procurement/purchases', buyer, { method: 'POST', body: JSON.stringify(purchaseInput) });
     await request('/api/procurement/purchases', buyer, {
       method: 'POST',
-      body: JSON.stringify({ ...purchaseInput, quantity: '2', unitPrice: '3', currency: 'USD', referenceNumber: 'PO-USD-001' }),
+      body: JSON.stringify({ ...purchaseInput, productId: ids.productC, unit: 'piece', quantity: '2', unitPrice: '1', currency: 'INR', referenceNumber: 'PO-USD-001' }),
     });
     const productFiltered = await (await request(`/api/procurement/purchases?productId=${ids.productA}&status=CONFIRMED`, buyer)).json();
     const supplierAndDateFiltered = await (await request(`/api/procurement/purchases?supplierId=${ids.supplierA}&startDate=2026-10-03&endDate=2026-10-03`, buyer)).json();
     const summary = await (await request('/api/procurement/purchases/summary', buyer)).json();
 
-    expect(productFiltered.data).toHaveLength(2);
+    expect(productFiltered.data).toHaveLength(1);
     expect(supplierAndDateFiltered.data).toHaveLength(2);
     expect(summary.data.totalPurchases).toBe(2);
     expect(summary.data.activeSuppliers).toBe(1);
@@ -244,15 +282,20 @@ describe('buyer procurement management', () => {
       { currency: 'INR', amount: '36000000.00' },
       { currency: 'USD', amount: '6.00' },
     ]);
-    expect(summary.data.totalQuantityByUnit).toEqual([{ unit: 'kg', quantity: '502' }]);
+    expect(summary.data.totalQuantityByUnit).toEqual([
+      { unit: 'kg', quantity: '500' },
+      { unit: 'piece', quantity: '2' },
+    ]);
   });
 
   it('updates commercial fields and retains cancelled purchases for history', async () => {
     const buyer = token(ids.buyerA);
     const created = await (await request('/api/procurement/purchases', buyer, { method: 'POST', body: JSON.stringify(purchaseInput) })).json();
     const id = created.data._id;
+    store.products.find((product) => product._id === ids.productA).sellingPrice = 1;
+    store.products.find((product) => product._id === ids.productA).currency = 'USD';
     const updated = await request(`/api/procurement/purchases/${id}`, buyer, {
-      method: 'PATCH', body: JSON.stringify({ quantity: '250', unitPrice: '72000', referenceNumber: 'PO-UPDATED', notes: 'Revised' }),
+      method: 'PATCH', body: JSON.stringify({ quantity: '250', unitPrice: '1', referenceNumber: 'PO-UPDATED', notes: 'Revised' }),
     });
     const cancelled = await request(`/api/procurement/purchases/${id}/status`, buyer, {
       method: 'PATCH', body: JSON.stringify({ status: 'CANCELLED' }),
@@ -263,6 +306,8 @@ describe('buyer procurement management', () => {
     expect(updated.status).toBe(200);
     expect(cancelled.status).toBe(200);
     expect(history.data.totalAmount).toBe('18000000.00');
+    expect(history.data.unitPrice).toBe('72000');
+    expect(history.data.currency).toBe('INR');
     expect(history.data.status).toBe('CANCELLED');
     expect(summary.data.totalPurchases).toBe(0);
     expect(store.purchases).toHaveLength(1);

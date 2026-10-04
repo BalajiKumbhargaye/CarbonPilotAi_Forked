@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { IDocument, IProcurementReviewData, DocumentType, DocumentStatus } from '@carbonpilot/shared';
+import { IDocument, IProcurementReviewData, DocumentType, DocumentStatus, DocumentClassificationSource } from '@carbonpilot/shared';
 
 export interface IDocumentModel extends Omit<IDocument, '_id'>, Document {
   storageKey?: string;
@@ -19,6 +19,7 @@ const DocumentSchema = new Schema<IDocumentModel>(
       ref: 'Supplier',
       index: true,
     },
+    productId: { type: Schema.Types.ObjectId, ref: 'Product', index: true },
     uploadedBy: {
       type: Schema.Types.ObjectId as unknown as typeof String,
       ref: 'User',
@@ -29,6 +30,10 @@ const DocumentSchema = new Schema<IDocumentModel>(
       enum: Object.values(DocumentType),
       required: true,
     },
+    classificationSource: { type: String, enum: Object.values(DocumentClassificationSource), default: DocumentClassificationSource.SUPPLIER_DECLARED },
+    classifiedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    classifiedAt: { type: Date },
+    classificationConfidence: { type: Number, min: 0, max: 1 },
     filename: { type: String, required: true },
     fileUrl: { type: String, required: true },
     storageKey: { type: String, select: false },

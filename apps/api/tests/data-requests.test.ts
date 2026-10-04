@@ -34,6 +34,9 @@ const state = vi.hoisted(() => ({
   templates: [] as any[],
   documents: [] as any[],
   notifications: [] as any[],
+  claims: [] as any[],
+  evidenceLinks: [] as any[],
+  auditLogs: [] as any[],
   members: [] as any[],
   nextId: 0,
 }));
@@ -190,6 +193,38 @@ vi.mock('../src/models/OrganizationMember', () => ({
 vi.mock('../src/models/Notification', () => ({
   NotificationModel: { insertMany: vi.fn(async (items: any[]) => { state.notifications.push(...items); }) },
 }));
+vi.mock('../src/models/Claim', () => ({
+  ClaimModel: {
+    findOne: vi.fn(async (query: any) => state.claims.find((claim) =>
+      stringId(claim.dataRequestId) === stringId(query.dataRequestId)
+      && stringId(claim.sourceReference?.questionResponseId) === stringId(query['sourceReference.questionResponseId'])
+      && claim.type === query.type
+      && stringId(claim.value) === stringId(query.value)
+    ) || null),
+    create: vi.fn(async (values: any) => {
+      const claim = { ...values, _id: `claim-${++state.nextId}` };
+      state.claims.push(claim);
+      return claim;
+    }),
+  },
+}));
+vi.mock('../src/models/ClaimEvidenceLink', () => ({
+  ClaimEvidenceLinkModel: {
+    create: vi.fn(async (values: any) => {
+      const link = { ...values, _id: `evidence-${++state.nextId}` };
+      state.evidenceLinks.push(link);
+      return link;
+    }),
+  },
+}));
+vi.mock('../src/models/AuditLog', () => ({
+  AuditLogModel: {
+    create: vi.fn(async (values: any) => {
+      state.auditLogs.push(values);
+      return values;
+    }),
+  },
+}));
 
 const baseRequest = {
   _id: ids.requestA,
@@ -233,6 +268,9 @@ function resetState() {
   state.documents = [];
   state.templates = [];
   state.notifications = [];
+  state.claims = [];
+  state.evidenceLinks = [];
+  state.auditLogs = [];
   state.members = [
     { organizationId: ids.supplierOrgA, userId: '555555555555555555555555', status: 'ACTIVE' },
     { organizationId: ids.buyerA, userId: ids.buyerUser, status: 'ACTIVE' },
@@ -310,6 +348,49 @@ describe('buyer-to-supplier data requests', () => {
     expect(submitted.completion).toMatchObject({ completed: 1, total: 2, missingRequiredItems: [] });
     expect(state.responses[0]).toMatchObject({ value: 'Mass balance', status: 'SUBMITTED' });
     expect(state.notifications.at(-1)).toMatchObject({ organizationId: ids.buyerA, title: 'Supplier submitted a data request' });
+  });
+
+  it('identifies questionnaire PCF claims with provenance and linked request evidence', async () => {
+    state.requests.push(makeRequest({
+      ...baseRequest,
+      productId: ids.productA,
+      requestedItems: [{
+        _id: ids.itemNumber,
+        key: 'product_carbon_footprint',
+        label: 'Product carbon footprint',
+        responseType: DataRequestResponseType.DECIMAL,
+        required: true,
+        requiresEvidence: true,
+        unit: 'tCO2e/tonne',
+      }],
+    }));
+    await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemNumber, {
+      originalname: 'pcf-test.pdf', mimetype: 'application/pdf', size: 9, buffer: Buffer.from('%PDF-test'),
+    } as Express.Multer.File, supplierUserA);
+    await dataRequestsService.saveResponse(ids.requestA, ids.itemNumber, { value: 1.42, unit: 'tCO2e/tonne' }, supplierUserA);
+
+    await dataRequestsService.submit(ids.requestA, supplierUserA);
+
+    expect(state.claims).toHaveLength(1);
+    expect(state.claims[0]).toMatchObject({
+      supplierId: ids.supplierA,
+      buyerOrganizationId: ids.buyerA,
+      productId: ids.productA,
+      dataRequestId: ids.requestA,
+      type: 'PCF_VALUE',
+      value: 1.42,
+      unit: 'tCO2e/tonne',
+      status: 'PENDING',
+      normalizedData: { originalValue: 1.42, normalizedValue: 1.42, normalizedUnit: 'kgCO2e/kg' },
+    });
+    expect(state.claims[0].sourceReference.questionResponseId).toBe(state.responses[0]._id);
+    expect(state.evidenceLinks).toHaveLength(1);
+    expect(state.evidenceLinks[0]).toMatchObject({
+      claimId: state.claims[0]._id,
+      documentId: state.documents[0]._id,
+      relationshipType: 'QUESTIONNAIRE_SUPPORT',
+    });
+    expect(state.auditLogs.some((entry) => entry.action === 'CLAIM_CREATED')).toBe(true);
   });
 
   it('blocks incomplete required and evidence-required items unless partial submission is allowed', async () => {

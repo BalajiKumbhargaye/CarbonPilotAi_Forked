@@ -7,6 +7,7 @@ import {
   ProductStatus,
   DocumentType,
   DocumentStatus,
+  DocumentClassificationSource,
   ClaimStatus,
   VerificationStatus,
   EvidenceCheckType,
@@ -22,6 +23,7 @@ import {
   PurchaseStatus,
   ExtractionStatus,
   EvidencePackStatus,
+  ProcurementDecisionStatus,
 } from './enums';
 
 /**
@@ -145,6 +147,8 @@ export interface IProduct {
   category: string;
   categoryId?: string;
   unit: string;
+  sellingPrice?: number;
+  currency?: string;
   description?: string;
   status: ProductStatus;
   productionFacilityIds: string[];
@@ -241,8 +245,13 @@ export interface IDocument {
   _id: string;
   organizationId: string;
   supplierId?: string;
+  productId?: string;
   uploadedBy: string;
   type: DocumentType;
+  classificationSource?: DocumentClassificationSource;
+  classifiedBy?: string;
+  classifiedAt?: string | Date;
+  classificationConfidence?: number;
   filename: string;
   fileUrl: string;
   mimeType: string;
@@ -281,9 +290,12 @@ export interface IExtractionField {
   field: string;
   value: string | number | boolean;
   unit?: string;
-  confidence: number; // 0.0 to 1.0
+  confidence?: number;
   page?: number;
   sourceText?: string;
+  section?: string;
+  tableReference?: string;
+  extractionStatus?: 'EXTRACTED' | 'NEEDS_REVIEW';
 }
 
 export interface IDocumentExtraction {
@@ -291,24 +303,58 @@ export interface IDocumentExtraction {
   documentId: string;
   extractionVersion: string;
   fields: IExtractionField[];
+  corrections?: IExtractionCorrection[];
   processedAt: string | Date;
+}
+
+export interface IExtractionCorrection {
+  field: string;
+  originalValue: string | number | boolean;
+  correctedValue: string | number | boolean;
+  reason: string;
+  correctedBy: string;
+  correctedAt: string | Date;
+  verificationRunId?: string;
 }
 
 export interface IClaim {
   _id: string;
   supplierId: string;
+  buyerOrganizationId?: string;
   productId?: string;
   facilityId?: string;
+  documentId?: string;
+  dataRequestId?: string;
+  claimText?: string;
+  sourceReference?: {
+    documentId?: string;
+    questionResponseId?: string;
+    page?: number;
+    section?: string;
+    sourceText?: string;
+  };
+  normalizedData?: INormalizedCarbonData;
   type: string; // e.g. PCF_VALUE, RECYCLED_CONTENT, ZERO_WASTE
   value: string | number;
-  unit: string;
-  methodology: string;
-  reportingPeriod: string;
-  boundary: string;
+  unit?: string;
+  methodology?: string;
+  reportingPeriod?: string;
+  boundary?: string;
   status: ClaimStatus;
   confidence: number; // 0.0 to 1.0
   createdAt: string | Date;
   updatedAt: string | Date;
+}
+
+export interface INormalizedCarbonData {
+  originalValue: number;
+  originalUnit: string;
+  normalizedValue?: number;
+  normalizedUnit?: string;
+  functionalUnit?: string;
+  boundary?: string;
+  reportingPeriod?: string;
+  conversionMethod?: string;
 }
 
 export interface IClaimEvidenceLink {
@@ -341,9 +387,32 @@ export interface IVerificationRun {
   triggeredBy: string;
   checks: IEvidenceCheck[];
   overallStatus: ClaimStatus;
-  score: number; // 0 to 100
+  score?: number;
+  startedAt?: string | Date;
+  completedAt?: string | Date;
+  issues?: IVerificationIssue[];
+  corroborationResults?: ICorroborationResult[];
   verifiedAt: string | Date;
   engineVersion: string;
+}
+
+export interface IVerificationIssue {
+  type: string;
+  severity: AnomalySeverity;
+  description: string;
+  claimId?: string;
+  documentId?: string;
+  recommendedAction: string;
+  status: AnomalyStatus;
+}
+
+export interface ICorroborationResult {
+  source: string;
+  verificationMethod: string;
+  lookupIdentifier: string;
+  result: 'CORROBORATED' | 'NOT_FOUND' | 'MISMATCH' | 'UNAVAILABLE' | 'NOT_CHECKED';
+  checkedAt?: string | Date;
+  supportingReference?: string;
 }
 
 export interface IAnomaly {
@@ -354,6 +423,10 @@ export interface IAnomaly {
   status: AnomalyStatus;
   description: string;
   documents: string[]; // document IDs
+  claimId?: string;
+  recommendedAction?: string;
+  reviewedBy?: string;
+  reviewedAt?: string | Date;
   detectedAt: string | Date;
   resolvedAt?: string | Date;
   resolutionNote?: string;
@@ -471,20 +544,80 @@ export interface ICarbonFactor {
 export interface ICarbonCalculation {
   _id: string;
   customerOrganizationId: string;
+  buyerOrganizationId?: string;
   supplierOrganizationId: string;
+  supplierId?: string;
   purchaseId: string;
   productId: string;
   quantity: number;
+  inputQuantity?: number;
   quantityUnit: string;
+  inputUnit?: string;
   carbonFactor: number;
   carbonFactorUnit: string;
+  normalizedCarbonIntensity?: number;
+  normalizedUnit?: string;
+  functionalUnit?: string;
+  lifecycleBoundary?: string;
+  reportingPeriod?: string;
   factorSource: string;
   methodology: string;
   totalEmissions: number;
+  calculatedEmissions?: number;
   emissionsUnit: string; // kgCO2e or tCO2e
+  status?: string;
   evidenceStatus: ClaimStatus;
   claimId?: string;
+  reason?: string;
+  calculationVersion?: number;
   calculatedAt: string | Date;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+}
+
+export interface IProcurementDecisionOptionSnapshot {
+  supplierId: string;
+  productId: string;
+  supplierName: string;
+  productName: string;
+  pricePerUnit?: number;
+  totalCost?: number;
+  currency?: string;
+  carbonIntensity?: number;
+  carbonIntensityUnit?: string;
+  estimatedEmissions?: number;
+  functionalUnit?: string;
+  lifecycleBoundary?: string;
+  reportingPeriod?: string;
+  evidenceStatus: ClaimStatus | 'MISSING';
+  corroborationStatus: 'CORROBORATED' | 'NOT_AVAILABLE';
+  comparisonStatus: 'COMPARABLE' | 'NOT_DIRECTLY_COMPARABLE' | 'NOT_AVAILABLE';
+}
+
+export interface IProcurementDecisionHistoryEntry {
+  action: string;
+  actorId: string;
+  changedAt: string | Date;
+  details?: Record<string, unknown>;
+}
+
+export interface IProcurementDecision {
+  _id: string;
+  organizationId: string;
+  createdBy: string;
+  productId: string;
+  quantity: number;
+  unit: string;
+  status: ProcurementDecisionStatus;
+  selectedSupplierId?: string;
+  selectedProductId?: string;
+  decisionReason?: string;
+  decisionOwnerId?: string;
+  decisionDate?: string | Date;
+  scenarioSnapshot: IProcurementDecisionOptionSnapshot[];
+  history: IProcurementDecisionHistoryEntry[];
+  createdAt: string | Date;
+  updatedAt: string | Date;
 }
 
 export interface IEvidencePack {

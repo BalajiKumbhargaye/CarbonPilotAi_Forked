@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { PortalPage } from '@/components/ui/PortalPage';
 import { EvidenceDocumentsWorkspace } from '@/components/evidence/EvidenceDocumentsWorkspace';
+import { VerificationDashboard } from '@/components/evidence/VerificationDashboard';
 
 const sectionMap: Record<string, { title: string; subtitle: string; stats: Array<{ label: string; value: string }> }> = {
   questionnaires: {
@@ -73,13 +74,20 @@ function toTitle(value: string) {
 export default function CustomerDynamicPage() {
   const params = useParams<{ slug?: string[] }>();
   const slug = params.slug ? params.slug.join('/') : 'dashboard';
-  if (slug === 'documents' || slug === 'evidence-center') {
+  if (slug === 'evidence-center') {
     return (
       <PortalPage
-        title={slug === 'documents' ? 'Documents' : 'Evidence Center'}
-        subtitle="Review uploaded evidence, extract available fields, and run claim verification."
+        title="Supplier Claim Verification"
+        subtitle="Review evidence, rule results, open issues, and corroboration status for connected suppliers."
       >
-        <EvidenceDocumentsWorkspace />
+        <VerificationDashboard />
+      </PortalPage>
+    );
+  }
+  if (slug === 'documents') {
+    return (
+      <PortalPage title="Documents" subtitle="Review organization documents and processing state.">
+        <EvidenceDocumentsWorkspace mode="buyer" />
       </PortalPage>
     );
   }

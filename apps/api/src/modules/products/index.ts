@@ -114,7 +114,13 @@ export class ProductService {
       const supplier = await SupplierModel.findOne({ organizationId: user!.organizationId });
       if (!supplier) throw new AppError('Supplier profile not found', 404, 'NOT_FOUND');
       supplierId = supplier._id.toString();
+      if (data.sellingPrice === undefined || !data.currency) {
+        throw new AppError('Selling price and currency are required for supplier products', 400, 'PRODUCT_PRICE_REQUIRED');
+      }
     } else {
+      if (data.sellingPrice !== undefined || data.currency !== undefined) {
+        throw new AppError('Only the product-owning supplier can set its selling price', 403, 'FORBIDDEN');
+      }
       if (!data.supplierId || !mongoose.isValidObjectId(data.supplierId)) {
         throw new AppError('Choose a valid supplier', 400, 'INVALID_SUPPLIER');
       }
@@ -135,6 +141,10 @@ export class ProductService {
         categoryId: category._id,
         category: category.name,
         unit: data.unit,
+        ...(user!.organizationType === OrganizationType.SUPPLIER ? {
+          sellingPrice: data.sellingPrice,
+          currency: data.currency,
+        } : {}),
         description: data.description,
         status: data.status || ProductStatus.ACTIVE,
       });
@@ -152,6 +162,20 @@ export class ProductService {
     const product = await ProductModel.findById(id);
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
     await this.assertCanAccess(product.supplierId.toString(), user!);
+    if (user!.organizationType !== OrganizationType.SUPPLIER
+      && (data.sellingPrice !== undefined || data.currency !== undefined)) {
+      throw new AppError('Only the product-owning supplier can set its selling price', 403, 'FORBIDDEN');
+    }
+    if (user!.organizationType === OrganizationType.SUPPLIER
+      && (data.sellingPrice !== undefined || data.currency !== undefined)
+      && (data.sellingPrice ?? product.sellingPrice) === undefined) {
+      throw new AppError('Selling price and currency are required for supplier products', 400, 'PRODUCT_PRICE_REQUIRED');
+    }
+    if (user!.organizationType === OrganizationType.SUPPLIER
+      && (data.sellingPrice !== undefined || data.currency !== undefined)
+      && !(data.currency ?? product.currency)) {
+      throw new AppError('Selling price and currency are required for supplier products', 400, 'PRODUCT_PRICE_REQUIRED');
+    }
 
     const update = { ...data };
     if (data.categoryId !== undefined) {

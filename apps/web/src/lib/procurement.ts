@@ -13,6 +13,8 @@ export interface PurchaseProduct {
   productCode?: string;
   category: string;
   unit: string;
+  sellingPrice?: number;
+  currency?: string;
 }
 
 export interface PurchaseItem {
@@ -54,9 +56,6 @@ export interface PurchaseInput {
   supplierId: string;
   productId: string;
   quantity: string;
-  unit: string;
-  unitPrice: string;
-  currency: string;
   purchaseDate: string;
   referenceNumber?: string;
   notes?: string;
@@ -82,6 +81,57 @@ export function getPurchases(filters: PurchaseFilters = {}) {
 
 export function getPurchase(id: string) {
   return apiFetch<PurchaseItem>(`/api/procurement/purchases/${encodeURIComponent(id)}`, {}, getToken());
+}
+
+export interface PurchaseCarbonTrackingRecord {
+  purchase: {
+    _id: string;
+    referenceNumber?: string;
+    status: string;
+    quantity: number;
+    unit: string;
+    purchaseDate: string;
+    currency: string;
+  };
+  supplier: { _id: string; name: string };
+  product: { _id: string; name: string; productCode?: string; category: string; unit: string };
+  expected: {
+    quantity?: number;
+    carbonIntensity?: number;
+    carbonIntensityUnit?: string;
+    functionalUnit?: string;
+    lifecycleBoundary?: string;
+    reportingPeriod?: string;
+    evidenceStatus?: string;
+    carbonDataSource?: string;
+    emissions?: number;
+  };
+  actual: {
+    quantity?: number;
+    carbonIntensity?: number;
+    carbonIntensityUnit?: string;
+    functionalUnit?: string;
+    lifecycleBoundary?: string;
+    reportingPeriod?: string;
+    evidenceStatus?: string;
+    carbonDataSource?: string;
+    emissions?: number;
+    calculationVersion?: number;
+  };
+  status: 'NOT_AVAILABLE' | 'EXPECTED_ONLY' | 'ACTUAL_ONLY' | 'NOT_COMPARABLE' | 'COMPLETE';
+  variance?: number;
+  variancePercent?: number;
+  comparisonReason?: string;
+  sourceOfVariance?: string;
+  calculatedAt?: string | null;
+}
+
+export function getPurchaseCarbonTracking(id: string) {
+  return apiFetch<PurchaseCarbonTrackingRecord>(`/api/carbon/purchases/${encodeURIComponent(id)}/carbon-tracking`, {}, getToken());
+}
+
+export function getCarbonTrackingDashboard() {
+  return apiFetch<{ summary: Record<string, number>; purchases: PurchaseCarbonTrackingRecord[] }>('/api/carbon/tracking', {}, getToken());
 }
 
 export function getPurchaseSummary() {

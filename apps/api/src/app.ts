@@ -1,7 +1,6 @@
 import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import path from 'path';
 import { apiRouter } from './routes';
 import { errorHandler } from './middleware/error.middleware';
 import { logger } from './utils/logger';
@@ -20,10 +19,6 @@ export function createApp(): Express {
   );
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-  // Static directory for uploaded files in development
-  const uploadDir = path.resolve(process.cwd(), 'uploads');
-  app.use('/uploads', express.static(uploadDir));
 
   // Structured Request Logging (Sanitizing sensitive tokens/headers)
   app.use((req: Request, _res: Response, next) => {

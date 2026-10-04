@@ -22,6 +22,7 @@ export * from './QuestionResponse';
 export * from './Certificate';
 export * from './CarbonFactor';
 export * from './CarbonCalculation';
+export * from './ProcurementDecision';
 export * from './EvidencePack';
 export * from './AuditLog';
 export * from './Notification';

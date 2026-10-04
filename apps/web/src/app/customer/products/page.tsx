@@ -125,14 +125,15 @@ export default function BuyerProductsPage() {
         <div className="py-8 text-center"><p className="text-sm text-slate-600">Unable to load products. Please try again.</p><Button variant="outline" size="sm" className="mt-3" onClick={() => setRetryCount((value) => value + 1)}>Try again</Button></div>
       ) : products.length ? (
         <div className="overflow-x-auto border-y border-slate-200 dark:border-slate-800">
-          <table className="w-full min-w-[850px] text-left text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Product</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Status</th><th className="px-4 py-3"><span className="sr-only">Actions</span></th></tr></thead>
+          <table className="w-full min-w-[1000px] text-left text-sm">
+            <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Product</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Unit</th><th className="px-4 py-3">Price / unit</th><th className="px-4 py-3">Status</th><th className="px-4 py-3"><span className="sr-only">Actions</span></th></tr></thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {products.map((product) => <tr key={product._id}>
                 <td className="px-4 py-4"><Link href={`/customer/products/${product._id}`} className="flex items-center gap-2 font-semibold text-slate-900 hover:text-emerald-700 dark:text-slate-100"><Package className="h-4 w-4 text-emerald-700" />{product.name}</Link><span className="mt-1 block pl-6 text-xs text-slate-500">{product.productCode || 'No product code'}</span></td>
                 <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{product.supplier?.name || '—'}</td>
                 <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{product.category}</td>
                 <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{product.unit}</td>
+                <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{product.sellingPrice !== undefined && product.currency ? formatProductPrice(product.sellingPrice, product.currency) : 'Not set'}</td>
                 <td className="px-4 py-4"><div className="space-y-2"><StatusLabel status={product.status} /><Select aria-label={`Change ${product.name} status`} className="h-8 min-w-28 text-xs" value={product.status} options={[{ label: 'Active', value: 'ACTIVE' }, { label: 'Inactive', value: 'INACTIVE' }]} onChange={(event) => changeStatus(product, event.target.value as ProductStatus)} /></div></td>
                 <td className="px-4 py-4"><Button variant="ghost" size="sm" aria-label={`Edit ${product.name}`} onClick={() => setEditor(product)}><Edit2 className="h-4 w-4" /></Button></td>
               </tr>)}
@@ -148,4 +149,12 @@ export default function BuyerProductsPage() {
       </Modal>
     </div>
   );
+}
+
+function formatProductPrice(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 8 }).format(amount);
+  } catch {
+    return `${currency} ${amount}`;
+  }
 }

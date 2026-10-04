@@ -220,10 +220,18 @@ describe('product directory and authorization', () => {
     expect(createdResponse.status).toBe(201);
     expect(created.data.category).toBe('Steel');
     expect(created.data.status).toBe('ACTIVE');
+    expect(created.data.sellingPrice).toBeUndefined();
     expect(updatedResponse.status).toBe(200);
     expect(refreshed.data.name).toBe('Structural Steel Coil Updated');
     expect(refreshed.data.unit).toBe('kg');
     expect(refreshed.data.status).toBe('INACTIVE');
+
+    const priceUpdate = await request(`/api/products/${productId}`, buyer, {
+      method: 'PATCH',
+      body: JSON.stringify({ sellingPrice: 1, currency: 'USD' }),
+    });
+    expect(priceUpdate.status).toBe(403);
+    expect(store.products.find((product) => product._id === productId).sellingPrice).toBeUndefined();
   });
 
   it('rejects adding a product for an unrelated or nonexistent supplier', async () => {
@@ -231,6 +239,7 @@ describe('product directory and authorization', () => {
     const unrelated = await request('/api/products', buyer, {
       method: 'POST', body: JSON.stringify({ ...newProduct, supplierId: ids.supplierB }),
     });
+
     const missing = await request('/api/products', buyer, {
       method: 'POST', body: JSON.stringify({ ...newProduct, supplierId: '600000000000000000000001' }),
     });
@@ -243,10 +252,20 @@ describe('product directory and authorization', () => {
     expect(invalid.status).toBe(400);
   });
 
+  it('prevents buyers from assigning supplier prices when creating products', async () => {
+    const buyer = token(ids.buyerA, 'CUSTOMER');
+    const response = await request('/api/products', buyer, {
+      method: 'POST',
+      body: JSON.stringify({ ...newProduct, sellingPrice: 100, currency: 'USD' }),
+    });
+
+    expect(response.status).toBe(403);
+  });
+
   it('forces supplier product creation to the authenticated supplier and blocks cross-supplier edits', async () => {
     const supplier = token(ids.supplierOrgA, 'SUPPLIER');
     const createdResponse = await request('/api/products', supplier, {
-      method: 'POST', body: JSON.stringify({ ...newProduct, supplierId: ids.supplierB }),
+      method: 'POST', body: JSON.stringify({ ...newProduct, supplierId: ids.supplierB, sellingPrice: 125.5, currency: 'inr' }),
     });
     const created = await createdResponse.json();
     const otherProduct = await request(`/api/products/${ids.productB}`, supplier);
@@ -254,12 +273,38 @@ describe('product directory and authorization', () => {
       method: 'PATCH', body: JSON.stringify({ name: 'Unauthorized edit' }),
     });
     const supplierProducts = await (await request('/api/products', supplier)).json();
+    const priceUpdate = await request(`/api/products/${created.data._id}`, supplier, {
+      method: 'PATCH', body: JSON.stringify({ sellingPrice: 130, currency: 'USD' }),
+    });
+    const refreshed = await (await request(`/api/products/${created.data._id}`, supplier)).json();
 
     expect(createdResponse.status).toBe(201);
     expect(created.data.supplier._id).toBe(ids.supplierA);
+    expect(created.data.sellingPrice).toBe(125.5);
+    expect(created.data.currency).toBe('INR');
+    expect(priceUpdate.status).toBe(200);
+    expect(refreshed.data.sellingPrice).toBe(130);
+    expect(refreshed.data.currency).toBe('USD');
     expect(otherProduct.status).toBe(403);
     expect(otherUpdate.status).toBe(403);
     expect(supplierProducts.data.every((product: any) => product.supplier._id === ids.supplierA)).toBe(true);
+  });
+
+  it('requires supplier prices and rejects unsupported product units', async () => {
+    const supplier = token(ids.supplierOrgA, 'SUPPLIER');
+    const missingPrice = await request('/api/products', supplier, {
+      method: 'POST', body: JSON.stringify(newProduct),
+    });
+    const unsupportedUnit = await request('/api/products', supplier, {
+      method: 'POST', body: JSON.stringify({ ...newProduct, unit: 'truck', sellingPrice: 10, currency: 'USD' }),
+    });
+    const excessivePrecision = await request('/api/products', supplier, {
+      method: 'POST', body: JSON.stringify({ ...newProduct, sellingPrice: '1.123456789', currency: 'USD' }),
+    });
+
+    expect(missingPrice.status).toBe(400);
+    expect(unsupportedUnit.status).toBe(400);
+    expect(excessivePrecision.status).toBe(400);
   });
 
   it('validates missing categories and handles invalid/nonexistent product IDs', async () => {

@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import {
   DataRequestResponseType,
   DataRequestStatus,
+  ClaimStatus,
   DocumentStatus,
   DocumentType,
   OrganizationType,
@@ -23,6 +24,8 @@ import { authenticate, AuthUserPayload } from '../../middleware/auth.middleware'
 import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import {
   DataRequestModel,
+  ClaimModel,
+  ClaimEvidenceLinkModel,
   DocumentModel,
   NotificationModel,
   OrganizationMemberModel,
@@ -36,6 +39,8 @@ import {
 import { isSupportedProcurementFile, privateDocumentStorage } from '../../services/abstractions/IStorageService';
 import { AppError, sendError, sendSuccess } from '../../utils/response';
 import { logger } from '../../utils/logger';
+import { normalizeCarbonData } from '../verification/normalization';
+import { auditService } from '../audit';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_SIZE } });
@@ -428,6 +433,15 @@ export class DataRequestsService {
       { dataRequestId: request._id, supplierId: supplier._id },
       { $set: { status: QuestionResponseStatus.SUBMITTED, submittedAt: new Date() } }
     );
+    await this.identifyClaimsFromResponses(
+      request,
+      supplier,
+      completeItems.flatMap((item) => {
+        const response = responseByItem.get(item._id.toString());
+        return response ? [{ item, response }] : [];
+      }),
+      user
+    );
     await this.notifyOrganization(
       request.customerOrganizationId.toString(),
       'Supplier submitted a data request',
@@ -436,6 +450,97 @@ export class DataRequestsService {
       'SUCCESS'
     );
     return this.toResponse(request, true, OrganizationType.SUPPLIER);
+  }
+
+  private claimTypeForQuestion(item: RequestItem) {
+    const key = `${item.key} ${item.label}`.toLowerCase().replace(/[_-]+/g, ' ');
+    if (/\bpcf\b|product carbon footprint|carbon footprint/.test(key)) return 'PCF_VALUE';
+    if (/recycled content|recycled material percentage/.test(key)) return 'RECYCLED_CONTENT';
+    if (/renewable (electricity|energy)|electricity from renewable/.test(key)) return 'RENEWABLE_ELECTRICITY';
+    if (/electricity consumption|energy consumption/.test(key)) return 'ENERGY_CONSUMPTION';
+    if (/scope 1 emissions?/.test(key)) return 'GHG_SCOPE_1';
+    if (/scope 2 emissions?/.test(key)) return 'GHG_SCOPE_2';
+    if (/scope 3 emissions?/.test(key)) return 'GHG_SCOPE_3';
+    return undefined;
+  }
+
+  private async identifyClaimsFromResponses(
+    request: RequestRecord,
+    supplier: any,
+    submitted: Array<{ item: RequestItem; response: any }>,
+    user: AuthUserPayload
+  ) {
+    for (const { item, response } of submitted) {
+      const type = this.claimTypeForQuestion(item);
+      const value = response.value;
+      const numericValue = typeof value === 'number' && Number.isFinite(value)
+        ? value
+        : typeof value === 'string' && /^\s*-?\d+(?:\.\d+)?\s*$/.test(value) ? Number(value) : undefined;
+      if (!type || numericValue === undefined) continue;
+
+      const unit = response.unit || item.unit;
+      const sourceText = response.answer || `${value}${unit ? ` ${unit}` : ''}`;
+      const linkedDocumentIds = [...new Set([
+        ...(response.evidenceDocumentIds || []),
+        ...(response.evidenceDocumentId ? [response.evidenceDocumentId] : []),
+      ].map((documentId: unknown) => String(documentId)))];
+      const documents = await Promise.all(linkedDocumentIds.map((documentId) =>
+        DocumentModel.findOne({
+          _id: documentId,
+          dataRequestId: request._id,
+          supplierId: supplier._id,
+        })
+      ));
+      const validDocuments = documents.filter((document): document is NonNullable<typeof document> => Boolean(document));
+      const normalizedData = unit ? normalizeCarbonData({
+        value: numericValue,
+        unit,
+      }) : undefined;
+      const existing = await ClaimModel.findOne({
+        dataRequestId: request._id,
+        'sourceReference.questionResponseId': response._id,
+        type,
+        value,
+        unit,
+      });
+      if (existing) continue;
+
+      const claim = await ClaimModel.create({
+        supplierId: supplier._id,
+        buyerOrganizationId: request.customerOrganizationId,
+        productId: request.productId,
+        dataRequestId: request._id,
+        documentId: validDocuments[0]?._id,
+        type,
+        value,
+        unit,
+        claimText: `${response.question}: ${sourceText}`,
+        sourceReference: {
+          documentId: validDocuments[0]?._id,
+          questionResponseId: response._id,
+          sourceText,
+        },
+        normalizedData,
+        status: ClaimStatus.PENDING,
+      });
+
+      for (const document of validDocuments) {
+        await ClaimEvidenceLinkModel.create({
+          claimId: claim._id,
+          documentId: document._id,
+          sourceText,
+          relationshipType: 'QUESTIONNAIRE_SUPPORT',
+        });
+      }
+      await auditService.logAction({
+        organizationId: user.organizationId,
+        userId: user.userId,
+        action: 'CLAIM_CREATED',
+        entityType: 'Claim',
+        entityId: claim._id.toString(),
+        newValue: { type, value, unit, dataRequestId: request._id.toString(), evidenceCount: validDocuments.length },
+      });
+    }
   }
 
   async requestClarification(id: string, data: unknown, user: AuthUserPayload) {

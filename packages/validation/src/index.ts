@@ -14,6 +14,8 @@ import {
   PurchaseStatus,
   SupplierStatus,
   ProductStatus,
+  ProcurementDecisionStatus,
+  PRODUCT_UNITS,
 } from '@carbonpilot/shared';
 
 /**
@@ -122,7 +124,12 @@ export const createProductSchema = z.object({
   name: z.string().trim().min(1, 'Product name is required'),
   productCode: z.string().trim().optional(),
   categoryId: z.string().min(1, 'Category is required'),
-  unit: z.string().trim().min(1, 'Unit is required'),
+  unit: z.enum(PRODUCT_UNITS, { errorMap: () => ({ message: 'Choose a supported product unit' }) }),
+  sellingPrice: z.union([
+    z.number().finite().nonnegative(),
+    z.string().trim().regex(/^\d+(?:\.\d{1,8})?$/, 'Enter a valid non-negative selling price'),
+  ]).transform(Number).refine((value) => Number(value.toFixed(8)) === value, 'Selling price supports up to 8 decimal places').optional(),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code').optional(),
   description: z.string().optional(),
   productionFacilityIds: z.array(z.string()).default([]),
   status: z.nativeEnum(ProductStatus).optional(),
@@ -132,7 +139,12 @@ export const updateProductSchema = z.object({
   name: z.string().trim().min(1, 'Product name is required').optional(),
   productCode: z.string().trim().optional(),
   categoryId: z.string().min(1, 'Category is required').optional(),
-  unit: z.string().trim().min(1, 'Unit is required').optional(),
+  unit: z.enum(PRODUCT_UNITS, { errorMap: () => ({ message: 'Choose a supported product unit' }) }).optional(),
+  sellingPrice: z.union([
+    z.number().finite().nonnegative(),
+    z.string().trim().regex(/^\d+(?:\.\d{1,8})?$/, 'Enter a valid non-negative selling price'),
+  ]).transform(Number).refine((value) => Number(value.toFixed(8)) === value, 'Selling price supports up to 8 decimal places').optional(),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code').optional(),
   description: z.string().optional(),
   status: z.nativeEnum(ProductStatus).optional(),
 });
@@ -164,12 +176,7 @@ export const createPurchaseSchema = z.object({
     z.number().finite().positive(),
     z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Quantity must be a positive decimal'),
   ]).transform(String).refine((value) => Number(value) > 0, 'Quantity must be greater than 0'),
-  unit: z.string().trim().min(1, 'Unit is required'),
-  unitPrice: z.union([
-    z.number().finite().nonnegative(),
-    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Unit price must be a non-negative decimal'),
-  ]).transform(String).refine((value) => Number(value) >= 0, 'Unit price cannot be negative'),
-  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code'),
+  unit: z.enum(PRODUCT_UNITS, { errorMap: () => ({ message: 'Choose a supported product unit' }) }).optional(),
   purchaseDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Invalid purchase date'),
   referenceNumber: z.string().trim().max(100).optional(),
   notes: z.string().trim().max(2000).optional(),
@@ -181,10 +188,6 @@ export const updatePurchaseSchema = z.object({
     z.number().finite().positive(),
     z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Quantity must be a positive decimal'),
   ]).transform(String).refine((value) => Number(value) > 0, 'Quantity must be greater than 0').optional(),
-  unitPrice: z.union([
-    z.number().finite().nonnegative(),
-    z.string().trim().regex(/^\d+(\.\d{1,8})?$/, 'Unit price must be a non-negative decimal'),
-  ]).transform(String).refine((value) => Number(value) >= 0, 'Unit price cannot be negative').optional(),
   purchaseDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Invalid purchase date').optional(),
   referenceNumber: z.string().trim().max(100).optional(),
   notes: z.string().trim().max(2000).optional(),
@@ -257,22 +260,30 @@ export const uploadDocumentMetadataSchema = z.object({
   reportingPeriod: z.string().optional(),
 });
 
+export const correctDocumentClassificationSchema = z.object({
+  type: z.nativeEnum(DocumentType),
+});
+
 /**
  * Claim Schemas
  */
 export const createClaimSchema = z.object({
   supplierId: z.string().min(1, 'Supplier ID is required'),
-  productId: z.string().optional(),
-  facilityId: z.string().optional(),
+  productId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  facilityId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  dataRequestId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   type: z.string().min(1, 'Claim type is required'),
   value: z.union([z.string(), z.number()]),
-  unit: z.string().min(1, 'Unit is required'),
-  methodology: z.string().min(1, 'Methodology is required'),
-  reportingPeriod: z.string().min(1, 'Reporting period is required'),
-  boundary: z.string().min(1, 'Boundary is required'),
+  unit: z.string().trim().min(1, 'Unit cannot be empty').optional(),
+  functionalUnit: z.string().trim().min(1).optional(),
+  methodology: z.string().trim().min(1).optional(),
+  reportingPeriod: z.string().trim().min(1).optional(),
+  boundary: z.string().trim().min(1).optional(),
   status: z.nativeEnum(ClaimStatus).default(ClaimStatus.PENDING),
-  confidence: z.number().min(0).max(1).default(1.0),
+  claimText: z.string().trim().max(2000).optional(),
 });
+
+export const updateClaimSchema = createClaimSchema.omit({ supplierId: true }).partial();
 
 export const linkEvidenceSchema = z.object({
   claimId: z.string().min(1, 'Claim ID is required'),
@@ -298,6 +309,17 @@ export const createAnomalySchema = z.object({
 export const resolveAnomalySchema = z.object({
   status: z.enum(['RESOLVED', 'IGNORED']),
   resolutionNote: z.string().min(1, 'Resolution note is required'),
+});
+
+export const correctExtractionSchema = z.object({
+  documentId: z.string().regex(/^[a-f\d]{24}$/i),
+  field: z.string().trim().min(1).max(100),
+  correctedValue: z.union([z.string().trim().min(1), z.number().finite(), z.boolean()]),
+  reason: z.string().trim().min(5).max(1000),
+});
+
+export const reviewVerificationIssueSchema = z.object({
+  note: z.string().trim().max(1000).optional(),
 });
 
 /**
@@ -384,8 +406,45 @@ export const createCarbonFactorSchema = z.object({
 
 export const calculateCarbonSchema = z.object({
   purchaseId: z.string().min(1, 'Purchase ID is required'),
+  claimId: z.string().optional(),
   carbonFactorId: z.string().optional(),
   customFactor: z.number().optional(),
+});
+
+export const compareCarbonSchema = z.object({
+  leftProductId: z.string().min(1, 'Left product is required').optional(),
+  rightProductId: z.string().min(1, 'Right product is required').optional(),
+  leftSupplierId: z.string().optional(),
+  rightSupplierId: z.string().optional(),
+  quantity: z.number().nonnegative().optional(),
+});
+
+export const procurementScenarioSchema = z.object({
+  productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
+  quantity: z.number().finite().positive('Quantity must be greater than 0'),
+});
+
+export const createProcurementDecisionSchema = z.object({
+  productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
+  quantity: z.number().finite().positive('Quantity must be greater than 0'),
+  selectedSupplierId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  selectedProductId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  decisionReason: z.string().trim().max(3000).optional(),
+});
+
+export const updateProcurementDecisionSchema = z.object({
+  productId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  quantity: z.number().finite().positive().optional(),
+  selectedSupplierId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  selectedProductId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  decisionReason: z.string().trim().max(3000).optional(),
+  status: z.enum([ProcurementDecisionStatus.DRAFT, ProcurementDecisionStatus.UNDER_REVIEW, ProcurementDecisionStatus.CANCELLED]).optional(),
+});
+
+export const finalizeProcurementDecisionSchema = z.object({
+  selectedSupplierId: z.string().regex(/^[a-f\d]{24}$/i),
+  selectedProductId: z.string().regex(/^[a-f\d]{24}$/i),
+  decisionReason: z.string().trim().max(3000).optional(),
 });
 
 /**

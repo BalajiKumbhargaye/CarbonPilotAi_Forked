@@ -5,10 +5,21 @@ import { ClaimModel } from '../../models/Claim';
 import { ClaimEvidenceLinkModel } from '../../models/ClaimEvidenceLink';
 import { DocumentExtractionModel } from '../../models/DocumentExtraction';
 import { EvidenceCheckModel } from '../../models/EvidenceCheck';
+import { AnomalyModel } from '../../models/Anomaly';
+import { ProductModel } from '../../models/Product';
 import { IDocumentModel } from '../../models/Document';
-import { sendSuccess, sendError } from '../../utils/response';
+import { AppError, sendSuccess, sendError } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
+import { requireOrganizationType } from '../../middleware/rbac.middleware';
+import { validate } from '../../middleware/validate.middleware';
+import { correctExtractionSchema, reviewVerificationIssueSchema } from '@carbonpilot/validation';
+import { OrganizationType } from '@carbonpilot/shared';
+import { auditService } from '../audit';
+import { dataRequestsService } from '../data-requests';
 import {
+  AnomalySeverity,
+  AnomalyStatus,
+  AnomalyType,
   ClaimStatus,
   EvidenceCheckType,
   EvidenceCheckResult,
@@ -17,11 +28,19 @@ import {
   IEvidenceCheck,
   IExtractionField,
 } from '@carbonpilot/shared';
+import { getAccessibleClaim, getAccessibleDocument, getAccessibleSupplierIds } from './access';
+import {
+  areComparablePcfValues,
+  certificateDateIssue,
+  normalizeUnitValue,
+  validateClaimValue,
+} from './normalization';
 
 interface LinkedEvidenceRecord {
   documentId?: string;
   type?: string;
   supplierId?: string;
+  productId?: string;
   reportingPeriod?: string;
   extractionFields: IExtractionField[];
   sourcePage?: number;
@@ -102,6 +121,7 @@ export class VerificationService {
         documentId,
         type: document?.type,
         supplierId: document?.supplierId,
+        productId: document?.productId?.toString(),
         reportingPeriod: document?.reportingPeriod,
         extractionFields: [],
         sourcePage: link.page,
@@ -122,7 +142,7 @@ export class VerificationService {
     }
   }
 
-  buildChecksForClaim(claim: VerificationClaim, linkedEvidence: PopulatedEvidenceLink[] = [], extractions: Array<{ documentId?: string; fields?: IExtractionField[] }> = []) {
+  async buildChecksForClaim(claim: VerificationClaim, linkedEvidence: PopulatedEvidenceLink[] = [], extractions: Array<{ documentId?: string; fields?: IExtractionField[] }> = []) {
     const evidenceRecords = this.buildEvidenceSet(linkedEvidence);
     this.appendExtractionFields(evidenceRecords, extractions);
 
@@ -134,7 +154,11 @@ export class VerificationService {
     const methodologyField = this.findFieldValue(allFields, ['methodology', 'method', 'calculation_method', 'standard']);
     const boundaryField = this.findFieldValue(allFields, ['boundary', 'scope', 'system_boundary']);
     const periodField = this.findFieldValue(allFields, ['reporting_period', 'reporting period', 'period', 'year']);
-    const quantityField = this.findFieldValue(allFields, ['pcf', 'carbon_footprint', 'carbon footprint', 'emissions', 'value']);
+    const isPcfClaim = /pcf|carbon footprint|carbon intensity/i.test(claim.type);
+    const quantityField = this.findFieldValue(
+      allFields,
+      isPcfClaim ? ['pcf', 'product carbon footprint', 'carbon_footprint', 'carbon footprint'] : [claim.type]
+    );
     const productField = this.findFieldValue(allFields, ['product_code', 'product id', 'product', 'product_name', 'sku']);
     const facilityField = this.findFieldValue(allFields, ['facility_name', 'facility id', 'facility', 'plant', 'site']);
     const checks: IEvidenceCheck[] = [];
@@ -185,17 +209,31 @@ export class VerificationService {
       );
     }
 
+    const product = claim.productId ? await ProductModel.findById(claim.productId) : null;
     if (claim.productId) {
+      const observedProduct = productField ? this.normalizeKey(String(productField.value)) : undefined;
+      const productValues = product
+        ? [product._id.toString(), product.name, product.productCode].filter(Boolean).map((value) => this.normalizeKey(String(value)))
+        : [];
+      const productMatches = Boolean(observedProduct && productValues.includes(observedProduct));
+      const linkedProductIds = evidenceRecords.map((record) => record.productId).filter(Boolean);
+      const linkedProductMatches = linkedProductIds.length > 0 && linkedProductIds.every((id) => id === claim.productId?.toString());
       checks.push(
         this.createCheck(
           claim._id.toString(),
           EvidenceCheckType.PRODUCT_MATCH,
-          productField ? EvidenceCheckResult.PASS : EvidenceCheckResult.UNKNOWN,
-          `Product ${claim.productId}`,
-          productField ? String(productField.value) : 'No product field detected in evidence',
-          productField
-            ? 'Evidence includes a product identifier or product name consistent with the claimed product.'
-            : 'No product metadata could be matched in the linked evidence.',
+          productMatches || linkedProductMatches
+            ? EvidenceCheckResult.PASS
+            : productField || linkedProductIds.length
+              ? EvidenceCheckResult.FAIL
+              : EvidenceCheckResult.UNKNOWN,
+          product?.name || `Product ${claim.productId}`,
+          productField ? String(productField.value) : linkedProductIds.length ? linkedProductIds.join(', ') : 'No product identity found in evidence',
+          productMatches || linkedProductMatches
+            ? 'Evidence product identity matches the claimed product.'
+            : productField || linkedProductIds.length
+              ? 'Evidence product identity differs from the claim.'
+              : 'Product identity is unavailable in linked evidence and requires review.',
           sourceDocumentId,
           sourcePage
         )
@@ -245,18 +283,20 @@ export class VerificationService {
       );
     }
 
-    const methodologyMatches =
-      methodologyField && this.normalizeKey(String(methodologyField.value)) === this.normalizeKey(claim.methodology);
+    const methodologyMatches = Boolean(
+      methodologyField && claim.methodology
+      && this.normalizeKey(String(methodologyField.value)) === this.normalizeKey(claim.methodology)
+    );
     checks.push(
       this.createCheck(
         claim._id.toString(),
         EvidenceCheckType.METHODOLOGY_CHECK,
-        methodologyField
+        methodologyField && claim.methodology
           ? methodologyMatches
             ? EvidenceCheckResult.PASS
             : EvidenceCheckResult.FAIL
           : EvidenceCheckResult.UNKNOWN,
-        claim.methodology,
+        claim.methodology || 'Methodology not provided',
         methodologyField ? String(methodologyField.value) : 'No methodology value detected',
         methodologyField
           ? methodologyMatches
@@ -268,18 +308,20 @@ export class VerificationService {
       )
     );
 
-    const boundaryMatches =
-      boundaryField && this.normalizeKey(String(boundaryField.value)) === this.normalizeKey(claim.boundary);
+    const boundaryMatches = Boolean(
+      boundaryField && claim.boundary
+      && this.normalizeKey(String(boundaryField.value)) === this.normalizeKey(claim.boundary)
+    );
     checks.push(
       this.createCheck(
         claim._id.toString(),
         EvidenceCheckType.BOUNDARY_CHECK,
-        boundaryField
+        boundaryField && claim.boundary
           ? boundaryMatches
             ? EvidenceCheckResult.PASS
             : EvidenceCheckResult.FAIL
           : EvidenceCheckResult.UNKNOWN,
-        claim.boundary,
+        claim.boundary || 'Boundary not provided',
         boundaryField ? String(boundaryField.value) : 'No boundary value detected',
         boundaryField
           ? boundaryMatches
@@ -291,18 +333,20 @@ export class VerificationService {
       )
     );
 
-    const periodMatches =
-      periodField && this.normalizeKey(String(periodField.value)) === this.normalizeKey(claim.reportingPeriod);
+    const periodMatches = Boolean(
+      periodField && claim.reportingPeriod
+      && this.normalizeKey(String(periodField.value)) === this.normalizeKey(claim.reportingPeriod)
+    );
     checks.push(
       this.createCheck(
         claim._id.toString(),
         EvidenceCheckType.PERIOD_MATCH,
-        periodField
+        periodField && claim.reportingPeriod
           ? periodMatches
             ? EvidenceCheckResult.PASS
             : EvidenceCheckResult.FAIL
           : EvidenceCheckResult.UNKNOWN,
-        claim.reportingPeriod,
+        claim.reportingPeriod || 'Reporting period not provided',
         periodField ? String(periodField.value) : 'No reporting period detected',
         periodField
           ? periodMatches
@@ -316,26 +360,75 @@ export class VerificationService {
 
     const claimNumericValue = this.parseNumeric(claim.value);
     const observedQuantity = quantityField ? this.parseNumeric(quantityField.value) : undefined;
-    const quantityMatches =
-      claimNumericValue !== undefined && observedQuantity !== undefined &&
-      Math.abs(claimNumericValue - observedQuantity) <= Math.max(0.01, claimNumericValue * 0.05);
+    const extractedFunctionalUnit = this.findFieldValue(allFields, ['functional_unit', 'functional unit', 'declared unit']);
+    const observedBoundary = boundaryField ? String(boundaryField.value) : undefined;
+    const observedPeriod = periodField ? String(periodField.value) : undefined;
+    const claimComparable = areComparablePcfValues(
+      {
+        unit: claim.unit || '',
+        functionalUnit: claim.normalizedData?.functionalUnit,
+        boundary: claim.boundary,
+        reportingPeriod: claim.reportingPeriod,
+      },
+      {
+        unit: quantityField?.unit || '',
+        functionalUnit: extractedFunctionalUnit ? String(extractedFunctionalUnit.value) : undefined,
+        boundary: observedBoundary,
+        reportingPeriod: observedPeriod,
+      }
+    );
+    const normalizedClaim = claim.unit ? normalizeUnitValue(claimNumericValue ?? Number.NaN, claim.unit) : undefined;
+    const normalizedObserved = quantityField?.unit
+      ? normalizeUnitValue(observedQuantity ?? Number.NaN, quantityField.unit)
+      : undefined;
+    const quantityMatches = Boolean(
+      isPcfClaim && claimComparable && normalizedClaim && normalizedObserved
+      && normalizedClaim.unit === normalizedObserved.unit
+      && Math.abs(normalizedClaim.value - normalizedObserved.value) <= Math.max(0.01, Math.abs(normalizedClaim.value) * 0.05)
+    );
+    const normalizedGeneralClaim = claim.unit ? normalizeUnitValue(claimNumericValue ?? Number.NaN, claim.unit) : undefined;
+    const normalizedGeneralObserved = quantityField?.unit
+      ? normalizeUnitValue(observedQuantity ?? Number.NaN, quantityField.unit)
+      : undefined;
+    const periodCompatible = Boolean(
+      periodField && claim.reportingPeriod
+      && this.normalizeKey(String(periodField.value)) === this.normalizeKey(claim.reportingPeriod)
+    );
+    const generalValuesComparable = Boolean(
+      !isPcfClaim && normalizedGeneralClaim && normalizedGeneralObserved
+      && normalizedGeneralClaim.unit === normalizedGeneralObserved.unit
+      && periodCompatible
+    );
+    const generalValueMatches = Boolean(
+      generalValuesComparable
+      && normalizedGeneralClaim && normalizedGeneralObserved
+      && Math.abs(normalizedGeneralClaim.value - normalizedGeneralObserved.value)
+        <= Math.max(0.01, Math.abs(normalizedGeneralClaim.value) * 0.05)
+    );
+    const claimValueIssue = claim.unit ? validateClaimValue(claimNumericValue, claim.unit) : undefined;
 
     checks.push(
       this.createCheck(
         claim._id.toString(),
         EvidenceCheckType.QUANTITY_MATCH,
-        claimNumericValue !== undefined && observedQuantity !== undefined
-          ? quantityMatches
+        claimValueIssue
+          ? EvidenceCheckResult.FAIL
+          : quantityMatches || generalValueMatches
             ? EvidenceCheckResult.PASS
-            : EvidenceCheckResult.FAIL
-          : EvidenceCheckResult.UNKNOWN,
-        `${claim.value} ${claim.unit}`,
-        observedQuantity !== undefined ? `${observedQuantity} ${quantityField?.unit ?? claim.unit}` : 'No quantity value detected',
-        claimNumericValue !== undefined && observedQuantity !== undefined
-          ? quantityMatches
-            ? 'Evidence quantity aligns with the claimed value within tolerance.'
-            : 'Evidence quantity deviates materially from the claimed value.'
-          : 'No quantified evidence was found to validate the claim value.',
+            : (isPcfClaim && quantityField && observedQuantity !== undefined && claimNumericValue !== undefined && claimComparable)
+              || (!isPcfClaim && quantityField && observedQuantity !== undefined && claimNumericValue !== undefined && generalValuesComparable)
+              ? EvidenceCheckResult.FAIL
+              : EvidenceCheckResult.UNKNOWN,
+        `${claim.value}${claim.unit ? ` ${claim.unit}` : ''}`,
+        observedQuantity !== undefined ? `${observedQuantity} ${quantityField?.unit ?? 'unit not provided'}` : 'No compatible quantity value detected',
+        claimValueIssue
+          ? claimValueIssue
+          : quantityMatches || generalValueMatches
+            ? 'Comparable evidence value aligns within the recorded 5% rule tolerance.'
+            : (isPcfClaim && quantityField && observedQuantity !== undefined && claimNumericValue !== undefined && claimComparable)
+              || (!isPcfClaim && quantityField && observedQuantity !== undefined && claimNumericValue !== undefined && generalValuesComparable)
+              ? 'Comparable evidence value differs by more than the recorded 5% rule tolerance.'
+              : 'A safe comparison is unavailable because units, functional unit, product, boundary, or period do not align.',
         sourceDocumentId,
         sourcePage
       )
@@ -343,72 +436,112 @@ export class VerificationService {
 
     const supportingDocumentTypes = evidenceRecords.map((record) => record.type?.toUpperCase()).filter(Boolean);
     const hasCertificate = supportingDocumentTypes.includes('CERTIFICATE');
+    const isCertificateClaim = /certificate|iso/i.test(claim.type);
     const certificateDoc = evidenceRecords.find((record) => record.type?.toUpperCase() === 'CERTIFICATE');
 
-    checks.push(
+    if (isCertificateClaim) checks.push(
       this.createCheck(
         claim._id.toString(),
         EvidenceCheckType.CERTIFICATE_VALIDITY,
-        hasCertificate
-          ? certificateDoc
-            ? EvidenceCheckResult.PASS
-            : EvidenceCheckResult.UNKNOWN
+        hasCertificate && certificateDoc
+          ? (() => {
+              const expiryField = this.findFieldValue(certificateDoc.extractionFields, ['expiry date', 'valid until', 'validity date']);
+              const issueField = this.findFieldValue(certificateDoc.extractionFields, ['issue date', 'issued on']);
+              return expiryField && issueField
+                ? certificateDateIssue(String(issueField.value), String(expiryField.value))
+                  ? EvidenceCheckResult.FAIL
+                  : EvidenceCheckResult.PASS
+                : EvidenceCheckResult.UNKNOWN;
+            })()
           : EvidenceCheckResult.UNKNOWN,
         'Certificate evidence required when applicable',
         hasCertificate ? 'Certificate document provided' : 'No certificate document linked',
         hasCertificate
-          ? 'The claim has a linked certificate document and the verification engine accepts the certificate record as supporting evidence.'
+          ? 'Certificate attachment alone does not establish validity; extracted issue and expiry dates are checked when present.'
           : 'No certificate document is present, so certificate validity is not confirmed for this claim.',
         certificateDoc?.documentId,
         certificateDoc?.sourcePage
       )
     );
 
-    const invoiceDoc = evidenceRecords.find((record) => ['INVOICE', 'PURCHASE_ORDER'].includes(record.type?.toUpperCase() ?? ''));
-    const invoiceValue = invoiceDoc ? this.findFieldValue(invoiceDoc.extractionFields, ['invoice_total', 'total_amount', 'total', 'amount']) : undefined;
-    const invoiceMatches =
-      invoiceValue && claimNumericValue !== undefined
-        ? Math.abs((this.parseNumeric(claim.value) ?? 0) - (this.parseNumeric(invoiceValue.value) ?? 0)) <=
-          Math.max(0.01, (this.parseNumeric(claim.value) ?? 0) * 0.05)
-        : false;
-
-    checks.push(
-      this.createCheck(
+    const pcfObservations = isPcfClaim && claim.productId
+      ? evidenceRecords.flatMap((record) => {
+          const field = this.findFieldValue(record.extractionFields, ['pcf', 'product carbon footprint', 'carbon footprint']);
+          const value = field ? this.parseNumeric(field.value) : undefined;
+          const functionalUnit = this.findFieldValue(record.extractionFields, ['functional unit', 'functional_unit', 'declared unit']);
+          const boundary = this.findFieldValue(record.extractionFields, ['boundary', 'scope', 'system boundary']);
+          const period = this.findFieldValue(record.extractionFields, ['reporting period', 'reporting_period', 'year']);
+          const productIdentity = this.findFieldValue(record.extractionFields, ['product code', 'product id', 'product name', 'product', 'sku']);
+          const normalizedIdentity = productIdentity ? this.normalizeKey(String(productIdentity.value)) : undefined;
+          const knownProductValues = product
+            ? [product._id.toString(), product.name, product.productCode].filter(Boolean).map((item) => this.normalizeKey(String(item)))
+            : [];
+          const productMatches = record.productId === claim.productId?.toString()
+            || Boolean(normalizedIdentity && knownProductValues.includes(normalizedIdentity));
+          return field && value !== undefined && field.unit && productMatches
+            ? [{
+                documentId: record.documentId,
+                value,
+                unit: field.unit,
+                functionalUnit: functionalUnit ? String(functionalUnit.value) : undefined,
+                boundary: boundary ? String(boundary.value) : undefined,
+                reportingPeriod: period ? String(period.value) : record.reportingPeriod,
+                page: field.page ?? record.sourcePage,
+              }]
+            : [];
+        })
+      : [];
+    if (pcfObservations.length > 1) {
+      let comparedPair = false;
+      let inconsistentPair: [typeof pcfObservations[number], typeof pcfObservations[number]] | undefined;
+      for (let leftIndex = 0; leftIndex < pcfObservations.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < pcfObservations.length; rightIndex += 1) {
+          const left = pcfObservations[leftIndex];
+          const right = pcfObservations[rightIndex];
+          if (!areComparablePcfValues(left, right)) continue;
+          const normalizedLeft = normalizeUnitValue(left.value, left.unit);
+          const normalizedRight = normalizeUnitValue(right.value, right.unit);
+          if (!normalizedLeft || !normalizedRight || normalizedLeft.unit !== normalizedRight.unit) continue;
+          comparedPair = true;
+          if (Math.abs(normalizedLeft.value - normalizedRight.value) > Math.max(0.01, Math.abs(normalizedLeft.value) * 0.05)) {
+            inconsistentPair = [left, right];
+            break;
+          }
+        }
+        if (inconsistentPair) break;
+      }
+      checks.push(this.createCheck(
         claim._id.toString(),
-        EvidenceCheckType.INVOICE_MATCH,
-        invoiceDoc
-          ? invoiceValue
-            ? invoiceMatches
-              ? EvidenceCheckResult.PASS
-              : EvidenceCheckResult.FAIL
-            : EvidenceCheckResult.UNKNOWN
-          : EvidenceCheckResult.UNKNOWN,
-        claim.value ? String(claim.value) : 'Invoice reference not available',
-        invoiceValue ? String(invoiceValue.value) : 'No invoice value detected',
-        invoiceDoc
-          ? invoiceValue
-            ? invoiceMatches
-              ? 'Invoice evidence aligns with the claimed quantity/value.'
-              : 'Invoice evidence differs materially from the claim value.'
-            : 'Invoice document exists but the value could not be validated.'
-          : 'No invoice or purchase-order evidence was linked to this claim.',
-        invoiceDoc?.documentId,
-        invoiceDoc?.sourcePage
-      )
-    );
+        EvidenceCheckType.CROSS_DOCUMENT_CONSISTENCY,
+        inconsistentPair ? EvidenceCheckResult.FAIL : comparedPair ? EvidenceCheckResult.PASS : EvidenceCheckResult.UNKNOWN,
+        'Comparable PCF evidence values should agree within 5%',
+        inconsistentPair
+          ? `${inconsistentPair[0].value} ${inconsistentPair[0].unit} vs ${inconsistentPair[1].value} ${inconsistentPair[1].unit}`
+          : `${pcfObservations.length} PCF source values`,
+        inconsistentPair
+          ? 'Comparable documents report conflicting values for the same product, functional unit, boundary, and period.'
+          : comparedPair
+            ? 'Comparable PCF source values are consistent within the recorded 5% tolerance.'
+            : 'No pair of PCF sources had fully compatible units, functional units, boundaries, and periods.',
+        inconsistentPair?.[1].documentId ?? pcfObservations[0].documentId,
+        inconsistentPair?.[1].page ?? pcfObservations[0].page
+      ));
+    }
 
     return checks;
   }
 
-  async getRunsByClaim(claimId: string) {
+  async getRunsByClaim(claimId: string, user: NonNullable<Request['user']>) {
+    await getAccessibleClaim(claimId, user);
     return VerificationRunModel.find({ claimId }).sort({ verifiedAt: -1 });
   }
 
-  async runVerification(claimId: string, triggeredByUserId: string) {
-    const claim = await ClaimModel.findById(claimId);
-    if (!claim) {
-      throw new Error('Claim not found');
+  async runVerification(claimId: string, user: NonNullable<Request['user']>) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer can create a verification run', 403, 'FORBIDDEN');
     }
+    const startedAt = new Date();
+    const claim = await getAccessibleClaim(claimId, user);
 
     const links = await ClaimEvidenceLinkModel.find({ claimId }).populate<{ documentId: IDocumentModel }>('documentId');
     const linkedDocumentIds = links
@@ -421,13 +554,18 @@ export class VerificationService {
         return extraction
           ? {
               documentId: extraction.documentId?.toString(),
-              fields: extraction.fields ?? [],
+              fields: (extraction.fields ?? []).map((field) => {
+                const correction = [...(extraction.corrections ?? [])]
+                  .reverse()
+                  .find((item) => this.normalizeKey(item.field) === this.normalizeKey(field.field));
+                return correction ? { ...field, value: correction.correctedValue } : field;
+              }),
             }
           : { documentId, fields: [] };
       })
     );
 
-    const checks = this.buildChecksForClaim(claim.toObject(), links, extractions);
+    const checks = await this.buildChecksForClaim(claim.toObject(), links, extractions);
 
     const evidenceChecks = await Promise.all(
       checks.map((check) =>
@@ -445,43 +583,253 @@ export class VerificationService {
       )
     );
 
-    const passCount = checks.filter((check) => check.result === EvidenceCheckResult.PASS).length;
     const failCount = checks.filter((check) => check.result === EvidenceCheckResult.FAIL).length;
-    const unknownCount = checks.filter((check) => check.result === EvidenceCheckResult.UNKNOWN).length;
-    const score = Math.round((passCount / checks.length) * 100) || 0;
+    const relevantChecks = checks.filter((check) => {
+      if (check.checkType === EvidenceCheckType.FACILITY_MATCH && !claim.facilityId) return false;
+      if (check.checkType === EvidenceCheckType.PRODUCT_MATCH && !claim.productId) return false;
+      return true;
+    });
+    const unknownCount = relevantChecks.filter((check) => check.result === EvidenceCheckResult.UNKNOWN).length;
 
     let overallStatus = ClaimStatus.PENDING;
     if (failCount > 0) {
-      overallStatus = ClaimStatus.UNSUPPORTED;
+      overallStatus = ClaimStatus.INCONSISTENT;
     } else if (unknownCount > 0) {
-      overallStatus = ClaimStatus.PARTIALLY_SUPPORTED;
-    } else if (checks.length > 0 && passCount === checks.length) {
+      overallStatus = ClaimStatus.NEEDS_REVIEW;
+    } else if (checks.length > 0) {
       overallStatus = ClaimStatus.SUPPORTED;
+    }
+
+    if (linkedDocumentIds.length === 0) overallStatus = ClaimStatus.UNSUPPORTED;
+
+    const issueChecks = checks.filter((check) => check.result === EvidenceCheckResult.FAIL);
+    const issueRecords = await Promise.all(issueChecks.map(async (check) => {
+      const type = check.checkType === EvidenceCheckType.CROSS_DOCUMENT_CONSISTENCY
+        ? AnomalyType.CROSS_DOCUMENT_CONTRADICTION
+        : check.checkType === EvidenceCheckType.QUANTITY_MATCH
+        ? AnomalyType.CROSS_DOCUMENT_CONTRADICTION
+        : check.checkType === EvidenceCheckType.PERIOD_MATCH
+          ? AnomalyType.DATE_MISMATCH
+          : check.checkType === EvidenceCheckType.PRODUCT_MATCH
+            ? AnomalyType.PRODUCT_MISMATCH
+            : AnomalyType.CROSS_DOCUMENT_CONTRADICTION;
+      const description = check.explanation;
+      const recommendedAction = 'Review the cited evidence and request supplier clarification where needed.';
+      await AnomalyModel.create({
+        supplierId: claim.supplierId,
+        claimId: claim._id,
+        type,
+        severity: AnomalySeverity.MEDIUM,
+        status: AnomalyStatus.OPEN,
+        description,
+        documents: check.sourceDocumentId ? [check.sourceDocumentId] : [],
+        recommendedAction,
+        detectedAt: new Date(),
+      });
+      return {
+        type,
+        severity: AnomalySeverity.MEDIUM,
+        description,
+        claimId: claim._id.toString(),
+        documentId: check.sourceDocumentId,
+        recommendedAction,
+        status: AnomalyStatus.OPEN,
+      };
+    }));
+    if (linkedDocumentIds.length === 0) {
+      const description = 'No supporting document is linked to this claim.';
+      const recommendedAction = 'Upload supporting evidence or explain why no document is available.';
+      await AnomalyModel.create({
+        supplierId: claim.supplierId,
+        claimId: claim._id,
+        type: AnomalyType.MISSING_EVIDENCE,
+        severity: AnomalySeverity.MEDIUM,
+        status: AnomalyStatus.OPEN,
+        description,
+        documents: [],
+        recommendedAction,
+        detectedAt: new Date(),
+      });
+      issueRecords.push({
+        type: AnomalyType.MISSING_EVIDENCE,
+        severity: AnomalySeverity.MEDIUM,
+        description,
+        claimId: claim._id.toString(),
+        documentId: undefined,
+        recommendedAction,
+        status: AnomalyStatus.OPEN,
+      });
     }
 
     const run = await VerificationRunModel.create({
       claimId: claim._id,
-      triggeredBy: triggeredByUserId,
+      triggeredBy: user.userId,
       checks: evidenceChecks,
       overallStatus,
-      score,
       verifiedAt: new Date(),
+      startedAt,
+      completedAt: new Date(),
+      issues: issueRecords,
+      corroborationResults: [{
+        source: 'No authoritative registry integration configured',
+        verificationMethod: 'Not checked',
+        lookupIdentifier: claim._id.toString(),
+        result: 'NOT_CHECKED',
+      }],
       engineVersion: '2.0',
     });
+
+    for (const documentId of linkedDocumentIds) {
+      const extraction = await DocumentExtractionModel.findOne({ documentId });
+      if (!extraction) continue;
+      let changed = false;
+      for (const correction of extraction.corrections ?? []) {
+        if (!correction.verificationRunId) {
+          correction.verificationRunId = run._id.toString();
+          changed = true;
+        }
+      }
+      if (changed) await extraction.save();
+    }
 
     claim.status = overallStatus;
     await claim.save();
 
+    await auditService.logAction({
+      organizationId: user.organizationId,
+      userId: user.userId,
+      action: 'VERIFICATION_COMPLETED',
+      entityType: 'VerificationRun',
+      entityId: run._id.toString(),
+      newValue: { claimId: claim._id.toString(), overallStatus },
+    });
+
     return run;
+  }
+
+  async getClaims(user: NonNullable<Request['user']>) {
+    const supplierIds = await getAccessibleSupplierIds(user);
+    return ClaimModel.find({ supplierId: { $in: supplierIds } }).sort({ updatedAt: -1 });
+  }
+
+  async getRun(runId: string, user: NonNullable<Request['user']>) {
+    const run = await VerificationRunModel.findById(runId);
+    if (!run) throw new AppError('Verification run not found', 404, 'NOT_FOUND');
+    await getAccessibleClaim(run.claimId.toString(), user);
+    return run;
+  }
+
+  async getIssues(user: NonNullable<Request['user']>) {
+    const supplierIds = await getAccessibleSupplierIds(user);
+    return AnomalyModel.find({ supplierId: { $in: supplierIds } }).sort({ detectedAt: -1 });
+  }
+
+  async reviewIssue(issueId: string, note: string | undefined, user: NonNullable<Request['user']>) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer can review verification issues', 403, 'FORBIDDEN');
+    }
+    const issue = await AnomalyModel.findById(issueId);
+    if (!issue) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    const supplierIds = await getAccessibleSupplierIds(user);
+    if (!supplierIds.includes(issue.supplierId.toString())) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    issue.status = AnomalyStatus.UNDER_REVIEW;
+    issue.reviewedBy = user.userId;
+    issue.reviewedAt = new Date();
+    if (note) issue.resolutionNote = note;
+    await issue.save();
+    await auditService.logAction({
+      organizationId: user.organizationId,
+      userId: user.userId,
+      action: 'VERIFICATION_ISSUE_REVIEWED',
+      entityType: 'Anomaly',
+      entityId: issue._id.toString(),
+      newValue: { status: issue.status, note },
+    });
+    return issue;
+  }
+
+  async correctExtraction(claimId: string, data: unknown, user: NonNullable<Request['user']>) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer reviewer can correct an extraction', 403, 'FORBIDDEN');
+    }
+    const claim = await getAccessibleClaim(claimId, user);
+    const parsed = correctExtractionSchema.safeParse(data);
+    if (!parsed.success) throw new AppError('Correction request is invalid', 400, 'VALIDATION_ERROR');
+    const { documentId, field, correctedValue, reason } = parsed.data;
+    const linked = await ClaimEvidenceLinkModel.findOne({ claimId, documentId });
+    if (!linked && claim.documentId?.toString() !== documentId) {
+      throw new AppError('Document is not linked to this claim', 404, 'NOT_FOUND');
+    }
+    await getAccessibleDocument(documentId, user);
+    const extraction = await DocumentExtractionModel.findOne({ documentId });
+    if (!extraction) throw new AppError('No extraction exists for this document', 409, 'EXTRACTION_NOT_FOUND');
+    const sourceField = extraction.fields.find((item) => this.normalizeKey(item.field) === this.normalizeKey(field));
+    if (!sourceField) throw new AppError('The extracted field was not found', 404, 'FIELD_NOT_FOUND');
+    extraction.corrections = extraction.corrections ?? [];
+    extraction.corrections.push({
+      field: sourceField.field,
+      originalValue: sourceField.value,
+      correctedValue,
+      reason,
+      correctedBy: user.userId,
+      correctedAt: new Date(),
+    });
+    await extraction.save();
+    await auditService.logAction({
+      organizationId: user.organizationId,
+      userId: user.userId,
+      action: 'MANUAL_CORRECTION',
+      entityType: 'DocumentExtraction',
+      entityId: extraction._id.toString(),
+      oldValue: { field: sourceField.field, value: sourceField.value },
+      newValue: { field: sourceField.field, value: correctedValue, reason, documentId },
+    });
+    const run = await this.runVerification(claimId, user);
+    return { extraction, verificationRun: run };
+  }
+
+  async requestClarification(claimId: string, data: unknown, user: NonNullable<Request['user']>) {
+    if (user.organizationType !== OrganizationType.CUSTOMER) {
+      throw new AppError('Only a buyer can request supplier clarification', 403, 'FORBIDDEN');
+    }
+    const claim = await getAccessibleClaim(claimId, user);
+    if (!claim.dataRequestId) {
+      throw new AppError('This claim is not linked to a Data Request; clarification cannot be routed yet.', 409, 'DATA_REQUEST_REQUIRED');
+    }
+    return dataRequestsService.requestClarification(claim.dataRequestId.toString(), data, user);
   }
 }
 
 export const verificationService = new VerificationService();
 
 export class VerificationController {
+  async getClaims(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.getClaims(req.user!)); } catch (error) { next(error); }
+  }
+
+  async getRun(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.getRun(req.params.runId as string, req.user!)); } catch (error) { next(error); }
+  }
+
+  async getIssues(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.getIssues(req.user!)); } catch (error) { next(error); }
+  }
+
+  async reviewIssue(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.reviewIssue(req.params.issueId as string, req.body.note, req.user!)); } catch (error) { next(error); }
+  }
+
+  async correctExtraction(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.correctExtraction(req.params.claimId as string, req.body, req.user!)); } catch (error) { next(error); }
+  }
+
+  async requestClarification(req: Request, res: Response, next: NextFunction) {
+    try { return sendSuccess(res, await verificationService.requestClarification(req.params.claimId as string, req.body, req.user!)); } catch (error) { next(error); }
+  }
+
   async getRunsByClaim(req: Request, res: Response, next: NextFunction) {
     try {
-      const runs = await verificationService.getRunsByClaim(req.params.claimId as string);
+      const runs = await verificationService.getRunsByClaim(req.params.claimId as string, req.user!);
       return sendSuccess(res, runs);
     } catch (error) {
       next(error);
@@ -493,10 +841,7 @@ export class VerificationController {
       if (!req.user) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
       }
-      const run = await verificationService.runVerification(
-        req.params.claimId as string,
-        req.user.userId
-      );
+      const run = await verificationService.runVerification(req.params.claimId as string, req.user);
       return sendSuccess(res, run, 201);
     } catch (error) {
       next(error);
@@ -508,6 +853,12 @@ export const verificationController = new VerificationController();
 
 export const verificationRoutes = Router();
 verificationRoutes.use(authenticate);
+verificationRoutes.get('/claims', (req, res, next) => verificationController.getClaims(req, res, next));
+verificationRoutes.get('/issues', (req, res, next) => verificationController.getIssues(req, res, next));
+verificationRoutes.patch('/issues/:issueId/review', requireOrganizationType(OrganizationType.CUSTOMER), validate(reviewVerificationIssueSchema), (req, res, next) => verificationController.reviewIssue(req, res, next));
+verificationRoutes.patch('/claims/:claimId/correction', requireOrganizationType(OrganizationType.CUSTOMER), validate(correctExtractionSchema), (req, res, next) => verificationController.correctExtraction(req, res, next));
+verificationRoutes.post('/claims/:claimId/clarification', requireOrganizationType(OrganizationType.CUSTOMER), (req, res, next) => verificationController.requestClarification(req, res, next));
+verificationRoutes.get('/runs/:runId', (req, res, next) => verificationController.getRun(req, res, next));
 verificationRoutes.get('/claim/:claimId', (req, res, next) =>
   verificationController.getRunsByClaim(req, res, next)
 );

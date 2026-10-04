@@ -40,8 +40,6 @@ export function PurchaseForm({
   const [productId, setProductId] = useState(purchase?.productId || '');
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [quantity, setQuantity] = useState(purchase ? String(purchase.quantity) : '');
-  const [unitPrice, setUnitPrice] = useState(purchase?.unitPrice || '');
-  const [currency, setCurrency] = useState(purchase?.currency || '');
   const [purchaseDate, setPurchaseDate] = useState(dateInputValue(purchase?.purchaseDate));
   const [referenceNumber, setReferenceNumber] = useState(purchase?.referenceNumber || '');
   const [notes, setNotes] = useState(purchase?.notes || '');
@@ -53,8 +51,6 @@ export function PurchaseForm({
     setSupplierId(purchase?.supplierId || '');
     setProductId(purchase?.productId || '');
     setQuantity(purchase ? String(purchase.quantity) : '');
-    setUnitPrice(purchase?.unitPrice || '');
-    setCurrency(purchase?.currency || '');
     setPurchaseDate(dateInputValue(purchase?.purchaseDate));
     setReferenceNumber(purchase?.referenceNumber || '');
     setNotes(purchase?.notes || '');
@@ -79,11 +75,18 @@ export function PurchaseForm({
     return () => { active = false; };
   }, [supplierId, purchase]);
 
-  const selectedProduct = purchase?.product || products.find((item) => item._id === productId) || null;
+  const selectedProduct = purchase
+    ? purchase.product
+    : products.find((item) => item._id === productId) || null;
   const activeSuppliers = suppliers.filter((supplier) => supplier.status === 'ACTIVE');
-  const previewAmount = Number(quantity) * Number(unitPrice);
-  const preview = Number.isFinite(previewAmount) && quantity && unitPrice
-    ? new Intl.NumberFormat(undefined, { style: 'currency', currency: /^[A-Z]{3}$/.test(currency) ? currency : 'USD', maximumFractionDigits: 2 }).format(previewAmount)
+  const purchaseCurrency = purchase?.currency || selectedProduct?.currency;
+  const supplierPrice = purchase
+    ? Number(purchase.unitPrice)
+    : selectedProduct?.sellingPrice;
+  const quantityValid = /^\d+(?:\.\d{1,8})?$/.test(quantity) && Number.isFinite(Number(quantity)) && Number(quantity) > 0;
+  const previewAmount = Number(quantity) * Number(supplierPrice);
+  const preview = Number.isFinite(previewAmount) && quantityValid && supplierPrice !== undefined && purchaseCurrency
+    ? new Intl.NumberFormat(undefined, { style: 'currency', currency: purchaseCurrency, maximumFractionDigits: 2 }).format(previewAmount)
     : '—';
   const editable = !purchase || ['DRAFT', 'CONFIRMED', 'PENDING'].includes(purchase.status);
 
@@ -94,9 +97,6 @@ export function PurchaseForm({
         supplierId,
         productId,
         quantity,
-        unit: selectedProduct?.unit || purchase?.unit || '',
-        unitPrice,
-        currency,
         purchaseDate,
         referenceNumber,
         notes,
@@ -127,21 +127,33 @@ export function PurchaseForm({
         <p><span className="text-slate-500">Product:</span> {purchase.product?.name || '—'}</p>
       </div>}
 
-      {selectedProduct && <p className="text-xs text-slate-500">Purchase unit must match the product unit: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedProduct.unit}</span></p>}
+      {selectedProduct && <div className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-800">
+        <p><span className="text-slate-500">Product unit:</span> <span className="font-semibold text-slate-800 dark:text-slate-200">{purchase?.unit || selectedProduct.unit}</span></p>
+        {purchase
+          ? <p className="mt-1"><span className="text-slate-500">Historical purchase price:</span> <span className="font-semibold text-slate-800 dark:text-slate-200">{formatPrice(purchase.unitPrice, purchase.currency)} / {purchase.unit}</span></p>
+          : selectedProduct.sellingPrice !== undefined && selectedProduct.currency
+            ? <p className="mt-1"><span className="text-slate-500">Supplier price:</span> <span className="font-semibold text-slate-800 dark:text-slate-200">{formatPrice(String(selectedProduct.sellingPrice), selectedProduct.currency)} / {selectedProduct.unit}</span></p>
+            : <p role="alert" className="mt-1 text-amber-800">Supplier price is not available for this product. Ask the supplier to set a selling price before purchasing.</p>}
+      </div>}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Input label="Quantity" type="number" min="0.00000001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} required disabled={!editable} />
-        <Input label="Unit price" type="number" min="0" step="any" value={unitPrice} onChange={(event) => setUnitPrice(event.target.value)} required disabled={!editable} />
-        <div>
-          <Input label="Currency" value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} placeholder="INR, USD, EUR..." list="purchase-currencies" maxLength={3} pattern="[A-Za-z]{3}" required disabled={!editable} />
-          <datalist id="purchase-currencies"><option value="INR" /><option value="USD" /><option value="EUR" /><option value="GBP" /></datalist>
-        </div>
+        <Input label="Quantity" type="text" inputMode="decimal" pattern="[0-9]+([.][0-9]{1,8})?" maxLength={24} value={quantity} onChange={(event) => setQuantity(event.target.value)} required disabled={!editable} />
+        <Input label="Currency" value={purchaseCurrency || 'Not available'} readOnly disabled />
         <Input label="Purchase date" type="date" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} required disabled={!editable} />
         <Input label="Reference number" value={referenceNumber} onChange={(event) => setReferenceNumber(event.target.value)} disabled={!editable} />
         {purchase && <Select label="Status" value={status} onChange={(event) => setStatus(event.target.value as PurchaseStatus)} options={statusOptions} disabled={!editable} />}
       </div>
       <Textarea label="Notes" value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} disabled={!editable} />
-      <div className="rounded-md bg-slate-50 px-4 py-3 text-sm dark:bg-slate-900"><span className="text-slate-500">Total preview</span><span className="ml-2 font-semibold text-slate-900 dark:text-slate-100">{preview}</span><p className="mt-1 text-xs text-slate-500">Final total is calculated and rounded by the server.</p></div>
-      <div className="flex justify-end border-t border-slate-200 pt-4 dark:border-slate-800"><Button type="submit" isLoading={isSubmitting} disabled={!editable || (!purchase && (!supplierId || !productId))}>{submitLabel}</Button></div>
+      <div className="rounded-md bg-slate-50 px-4 py-3 text-sm dark:bg-slate-900"><span className="text-slate-500">Total preview</span><span className="ml-2 font-semibold text-slate-900 dark:text-slate-100">{preview}</span><p className="mt-1 text-xs text-slate-500">Calculated using the supplier's product price. Final total is calculated and rounded by the server.</p></div>
+      <div className="flex justify-end border-t border-slate-200 pt-4 dark:border-slate-800"><Button type="submit" isLoading={isSubmitting} disabled={!editable || !quantityValid || (!purchase && (!supplierId || !productId || supplierPrice === undefined || !purchaseCurrency))}>{submitLabel}</Button></div>
     </form>
   );
+}
+
+function formatPrice(amount: string, currency: string) {
+  const value = Number(amount);
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 8 }).format(value);
+  } catch {
+    return `${currency} ${amount}`;
+  }
 }

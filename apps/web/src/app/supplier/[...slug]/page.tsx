@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { PortalPage } from '@/components/ui/PortalPage';
 import { EvidenceDocumentsWorkspace } from '@/components/evidence/EvidenceDocumentsWorkspace';
+import { SupplierVerificationFeedback } from '@/components/evidence/SupplierVerificationFeedback';
 
 const sectionMap: Record<string, { title: string; subtitle: string; stats: Array<{ label: string; value: string }> }> = {
   'company/profile': {
@@ -93,13 +94,20 @@ function toTitle(value: string) {
 export default function SupplierDynamicPage() {
   const params = useParams<{ slug?: string[] }>();
   const slug = params.slug ? params.slug.join('/') : 'dashboard';
+  if (slug === 'verification-issues') {
+    return (
+      <PortalPage title="Verification Feedback" subtitle="Review buyer-raised evidence issues and respond through the linked Data Request.">
+        <SupplierVerificationFeedback />
+      </PortalPage>
+    );
+  }
   if (slug === 'documents' || slug === 'evidence') {
     return (
       <PortalPage
         title={slug === 'documents' ? 'Documents' : 'Evidence'}
         subtitle="Upload supplier evidence, review extraction results, and run claim verification."
       >
-        <EvidenceDocumentsWorkspace />
+        <EvidenceDocumentsWorkspace mode="supplier" />
       </PortalPage>
     );
   }

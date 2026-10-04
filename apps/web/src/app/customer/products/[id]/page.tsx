@@ -76,7 +76,7 @@ export default function BuyerProductDetailsPage({ params }: { params: { id: stri
         <div className="flex gap-2"><Link href="/customer/products"><Button variant="outline" size="sm"><ArrowLeft className="h-4 w-4" /> Products</Button></Link><Button size="sm" onClick={() => setEditing(true)}><Edit2 className="h-4 w-4" /> Edit product</Button></div>
       </header>
 
-      <section className="space-y-3"><h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Basic information</h2><Card><CardContent className="grid gap-5 p-5 sm:grid-cols-2 lg:grid-cols-3"><Info label="Product" value={product.name} /><Info label="Supplier" value={product.supplier.name} /><Info label="Category" value={product.category} /><Info label="Product code" value={product.productCode || '—'} /><Info label="Unit" value={product.unit} /><Info label="Status" value={product.status === 'ACTIVE' ? 'Active' : 'Inactive'} /><Info label="Description" value={product.description || '—'} /></CardContent></Card></section>
+      <section className="space-y-3"><h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Basic information</h2><Card><CardContent className="grid gap-5 p-5 sm:grid-cols-2 lg:grid-cols-3"><Info label="Product" value={product.name} /><Info label="Supplier" value={product.supplier.name} /><Info label="Category" value={product.category} /><Info label="Product code" value={product.productCode || '—'} /><Info label="Unit" value={product.unit} /><Info label="Supplier price per unit" value={product.sellingPrice !== undefined && product.currency ? formatUnitPrice(product.sellingPrice, product.currency) : 'Not set'} /><Info label="Status" value={product.status === 'ACTIVE' ? 'Active' : 'Inactive'} /><Info label="Description" value={product.description || '—'} /></CardContent></Card></section>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <EmptySection title="Carbon Data">No carbon data available yet.</EmptySection>
@@ -104,5 +104,10 @@ function EmptySection({ title, children }: { title: string; children: React.Reac
 function formatMoney(amount: string, currency: string) {
   const value = Number(amount);
   try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
+  catch { return `${currency} ${amount}`; }
+}
+
+function formatUnitPrice(amount: number, currency: string) {
+  try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 8 }).format(amount); }
   catch { return `${currency} ${amount}`; }
 }

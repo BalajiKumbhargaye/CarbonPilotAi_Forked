@@ -11,7 +11,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { PurchaseForm } from '@/components/procurement/PurchaseForm';
 import { getSuppliers, type SupplierDirectoryItem } from '@/lib/suppliers';
-import { getPurchase, updatePurchase, updatePurchaseStatus, type PurchaseInput, type PurchaseItem, type PurchaseStatus } from '@/lib/procurement';
+import { getPurchase, getPurchaseCarbonTracking, updatePurchase, updatePurchaseStatus, type PurchaseCarbonTrackingRecord, type PurchaseInput, type PurchaseItem, type PurchaseStatus } from '@/lib/procurement';
 
 const statuses = [
   { label: 'Draft', value: 'DRAFT' },
@@ -28,16 +28,18 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [tracking, setTracking] = useState<PurchaseCarbonTrackingRecord | null>(null);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError('');
-    Promise.all([getPurchase(params.id), getSuppliers()]).then(([record, supplierItems]) => {
+    Promise.all([getPurchase(params.id), getSuppliers(), getPurchaseCarbonTracking(params.id)]).then(([record, supplierItems, trackingRecord]) => {
       if (!active) return;
       setPurchase(record);
       setSuppliers(supplierItems);
+      setTracking(trackingRecord);
     }).catch(() => { if (active) setError('Unable to load purchase. Please try again.'); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [params.id, retry]);
@@ -83,6 +85,40 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
         <Card><CardHeader><CardTitle>Product</CardTitle></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2"><Info label="Name" value={purchase.product?.name || '—'} /><Info label="Category" value={purchase.product?.category || '—'} /><Info label="Product code" value={purchase.product?.productCode || '—'} /><Info label="Unit" value={purchase.unit} /></CardContent></Card>
         <Card><CardHeader><CardTitle>Commercial data</CardTitle></CardHeader><CardContent className="grid gap-4 sm:grid-cols-2"><Info label="Quantity" value={`${Number(purchase.quantity).toLocaleString()} ${purchase.unit}`} /><Info label="Unit price" value={`${formatMoney(purchase.unitPrice, purchase.currency)} / ${purchase.unit}`} /><Info label="Total" value={formatMoney(purchase.totalAmount, purchase.currency)} /><Info label="Currency" value={purchase.currency} /></CardContent></Card>
       </div>
+
+      {tracking && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Expected vs Actual Carbon Tracking</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Expected Carbon</p>
+                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.expected.emissions != null ? `${tracking.expected.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
+                <p className="mt-1 text-sm text-slate-500">{tracking.expected.quantity ?? '—'} {purchase.unit} × {tracking.expected.carbonIntensity ?? '—'} {tracking.expected.carbonIntensityUnit || 'kgCO2e/kg'}</p>
+              </div>
+              <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Calculated Actual Carbon</p>
+                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.actual.emissions != null ? `${tracking.actual.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
+                <p className="mt-1 text-sm text-slate-500">{tracking.actual.quantity ?? '—'} {purchase.unit} × {tracking.actual.carbonIntensity ?? '—'} {tracking.actual.carbonIntensityUnit || 'kgCO2e/kg'}</p>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Info label="Variance" value={tracking.variance != null ? `${tracking.variance > 0 ? '+' : ''}${tracking.variance.toLocaleString()} kgCO2e` : 'N/A'} />
+              <Info label="Variance %" value={tracking.variancePercent != null ? `${tracking.variancePercent > 0 ? '+' : ''}${tracking.variancePercent}%` : 'N/A'} />
+              <Info label="Status" value={tracking.status} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Info label="Lifecycle boundary" value={tracking.expected.lifecycleBoundary || tracking.actual.lifecycleBoundary || '—'} />
+              <Info label="Functional unit" value={tracking.expected.functionalUnit || tracking.actual.functionalUnit || '—'} />
+              <Info label="Evidence" value={tracking.expected.evidenceStatus || tracking.actual.evidenceStatus || 'NOT_AVAILABLE'} />
+              <Info label="Source of variance" value={tracking.sourceOfVariance || 'NONE'} />
+            </div>
+            {tracking.comparisonReason && <p className="text-sm text-slate-600 dark:text-slate-300">{tracking.comparisonReason}</p>}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-3"><EmptySection title="Carbon">No carbon calculation available yet.</EmptySection><EmptySection title="Evidence">No evidence associated yet.</EmptySection><EmptySection title="Procurement Decision">No decision record yet.</EmptySection></div>
       {purchase.notes && <Card><CardHeader><CardTitle>Notes</CardTitle></CardHeader><CardContent><p className="whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">{purchase.notes}</p></CardContent></Card>}

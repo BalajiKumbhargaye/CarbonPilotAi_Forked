@@ -36,6 +36,8 @@ const ProductSchema = new Schema<IProductDocument>(
       index: true,
     },
     unit: { type: String, required: true, trim: true, default: 'unit' },
+    sellingPrice: { type: Number, min: 0 },
+    currency: { type: String, uppercase: true, minlength: 3, maxlength: 3 },
     description: { type: String, trim: true },
     status: { type: String, enum: Object.values(ProductStatus), default: ProductStatus.ACTIVE, required: true },
     productionFacilityIds: [{ type: Schema.Types.ObjectId, ref: 'Facility' }],

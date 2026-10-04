@@ -143,10 +143,11 @@ export class PurchasesService {
       customerOrganizationId,
       data.unit
     );
-    const unitPrice = data.unitPrice as string;
-    const totalAmount = data.totalAmount === undefined
-      ? this.calculateTotal(data.quantity as string, unitPrice)
-      : this.normalizeTotalAmount(data.totalAmount);
+    if (product.sellingPrice === undefined || !product.currency) {
+      throw new AppError('Supplier has not set a selling price and currency for this product', 409, 'PRODUCT_PRICE_UNAVAILABLE');
+    }
+    const unitPrice = this.normalizeUnitPrice(product.sellingPrice);
+    const totalAmount = this.calculateTotal(data.quantity as string, unitPrice);
     const referenceNumber = data.referenceNumber?.trim() || undefined;
 
     try {
@@ -159,7 +160,7 @@ export class PurchasesService {
         unit: product.unit,
         unitPrice: mongoose.Types.Decimal128.fromString(unitPrice),
         totalAmount: mongoose.Types.Decimal128.fromString(totalAmount),
-        currency: data.currency,
+        currency: product.currency,
         purchaseDate: new Date(data.purchaseDate),
         referenceNumber,
         notes: data.notes,
@@ -199,10 +200,9 @@ export class PurchasesService {
       }
       update.status = data.status;
     }
-    if (data.unitPrice !== undefined) update.unitPrice = mongoose.Types.Decimal128.fromString(data.unitPrice);
     const quantity = data.quantity ?? String(record.quantity);
-    const unitPrice = data.unitPrice ?? String(record.unitPrice || '0');
-    if (data.quantity !== undefined || data.unitPrice !== undefined) {
+    const unitPrice = this.normalizeUnitPrice(Number(String(record.unitPrice || '0')));
+    if (data.quantity !== undefined) {
       update.totalAmount = mongoose.Types.Decimal128.fromString(this.calculateTotal(quantity, unitPrice));
     }
 
@@ -234,7 +234,7 @@ export class PurchasesService {
     return record;
   }
 
-  private async validateSupplierProduct(supplierId: string, productId: string, customerOrganizationId: string, unit: string) {
+  private async validateSupplierProduct(supplierId: string, productId: string, customerOrganizationId: string, unit?: string) {
     if (!mongoose.isValidObjectId(supplierId)) throw new AppError('Choose a valid supplier', 400, 'INVALID_SUPPLIER');
     if (!mongoose.isValidObjectId(productId)) throw new AppError('Choose a valid product', 400, 'INVALID_PRODUCT');
 
@@ -253,7 +253,7 @@ export class PurchasesService {
       throw new AppError('Product does not belong to the selected supplier', 400, 'PRODUCT_SUPPLIER_MISMATCH');
     }
     if (product.status !== ProductStatus.ACTIVE) throw new AppError('Inactive products cannot be purchased', 400, 'INACTIVE_PRODUCT');
-    if (unit.trim() !== product.unit) {
+    if (unit && unit.trim() !== product.unit) {
       throw new AppError(`Purchase unit must match the product unit (${product.unit})`, 400, 'UNIT_MISMATCH');
     }
     return { supplier, product };
@@ -301,7 +301,7 @@ export class PurchasesService {
         category: product.category,
         unit: product.unit,
       } : null,
-      unitPrice: String(record.unitPrice || '0'),
+      unitPrice: this.normalizeUnitPrice(Number(String(record.unitPrice || '0'))),
       totalAmount: String(record.totalAmount || '0'),
       status: record.status || PurchaseStatus.CONFIRMED,
     };
@@ -316,12 +316,15 @@ export class PurchasesService {
     return this.fromMoneyMinorUnits(cents);
   }
 
-  private normalizeTotalAmount(value: unknown) {
-    const amount = String(value);
-    if (!/^\d+(?:\.\d{1,2})?$/.test(amount)) {
-      throw new AppError('Enter a valid total amount', 400, 'INVALID_AMOUNT');
+  private normalizeUnitPrice(value: number) {
+    if (!Number.isFinite(value) || value < 0 || Number(value.toFixed(8)) !== value) {
+      throw new AppError('Supplier product price is invalid', 409, 'INVALID_PRODUCT_PRICE');
     }
-    return this.fromMoneyMinorUnits(this.toMoneyMinorUnits(amount));
+    const normalized = value.toFixed(8).replace(/\.?0+$/, '');
+    if (!/^\d+(?:\.\d{1,8})?$/.test(normalized)) {
+      throw new AppError('Supplier product price is invalid', 409, 'INVALID_PRODUCT_PRICE');
+    }
+    return normalized;
   }
 
   private toScaledInteger(value: string) {

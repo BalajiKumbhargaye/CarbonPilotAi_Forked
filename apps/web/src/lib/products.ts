@@ -24,6 +24,8 @@ export interface ProductItem {
   category: string;
   categoryId?: string;
   unit: string;
+  sellingPrice?: number;
+  currency?: string;
   description?: string;
   status: ProductStatus;
   createdAt?: string;
@@ -35,6 +37,8 @@ export interface ProductInput {
   productCode?: string;
   categoryId: string;
   unit: string;
+  sellingPrice?: number;
+  currency?: string;
   description?: string;
   status?: ProductStatus;
 }

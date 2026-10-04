@@ -26,6 +26,7 @@ The application uses MongoDB via Mongoose. The actual model layer is defined und
 - Certificate
 - CarbonFactor
 - CarbonCalculation
+- ProcurementDecision
 - EvidencePack
 - AuditLog
 - Notification
@@ -36,6 +37,7 @@ The application uses MongoDB via Mongoose. The actual model layer is defined und
 - Supplier → organization
 - Supplier → products and facilities
 - Purchase → customer organization + supplier organization + product
+- ProcurementDecision → buyer organization, product, optional selected supplier/product, scenario snapshot, and decision history
 - Document → organization and optional supplier
 - Claim → supplier, product, facility
 - VerificationRun → claim and evidence checks
@@ -55,7 +57,9 @@ The shared enum layer defines the platform's normalized statuses, including:
 - AnomalyType / AnomalySeverity / AnomalyStatus
 - CertificateStatus
 - DataRequestStatus
+- CarbonCalculationStatus
+- ProcurementDecisionStatus
 
 ## Important note
 
-The database schema is present and connected to the app, but the feature logic around complete evidence chains, verification outcomes, and carbon computation remains intentionally foundation-only rather than fully connected business logic.
+Procurement decisions retain the buyer's selected supplier, reason, owner, decision date, scenario quantity, and a snapshot of supplier prices, carbon data, and evidence status. Finalized decisions are immutable; scenario analysis does not create or update purchase records.
