@@ -303,6 +303,12 @@ export interface IDocumentExtraction {
   documentId: string;
   extractionVersion: string;
   fields: IExtractionField[];
+  method?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
+  status?: 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  language?: string;
+  errorMessage?: string;
+  sourceDocumentId?: string;
+  pageCount?: number;
   corrections?: IExtractionCorrection[];
   processedAt: string | Date;
 }
