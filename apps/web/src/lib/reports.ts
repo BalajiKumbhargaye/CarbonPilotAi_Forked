@@ -5,7 +5,7 @@ export interface ProcurementCarbonReportSummary {
   totalProcurementQuantity: number;
   suppliersCount: number;
   productsCount: number;
-  totalProcurementValue: number;
+  totalProcurementValueByCurrency: Array<{ currency: string; amount: number }>;
   totalExpectedEmissions: number;
   totalActualEmissions: number;
   totalVariance: number;

@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
-import { Shield, FileCheck, Layers } from 'lucide-react';
+import { FileCheck } from 'lucide-react';
 
 export interface ClaimCardProps {
   type: string;
@@ -26,7 +26,7 @@ export const ClaimCard: React.FC<ClaimCardProps> = ({
   reportingPeriod,
   status,
   confidence,
-  evidenceCount = 1,
+  evidenceCount,
   className,
   onVerify,
 }) => {
@@ -62,8 +62,8 @@ export const ClaimCard: React.FC<ClaimCardProps> = ({
         </div>
         <div>
           <span className="text-slate-400">Confidence:</span>{' '}
-          <span className="font-medium text-emerald-600 dark:text-emerald-400">
-            {confidence ? `${Math.round(confidence * 100)}%` : '100%'}
+          <span className="font-medium">
+            {confidence == null ? 'Not available' : `${Math.round(confidence <= 1 ? confidence * 100 : confidence)}%`}
           </span>
         </div>
       </div>
@@ -71,7 +71,9 @@ export const ClaimCard: React.FC<ClaimCardProps> = ({
       <div className="mt-4 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-3 text-xs">
         <span className="inline-flex items-center gap-1 text-slate-500">
           <FileCheck className="h-3.5 w-3.5 text-slate-400" />
-          {evidenceCount} linked document{evidenceCount > 1 ? 's' : ''}
+          {evidenceCount == null
+            ? 'Evidence count not available'
+            : `${evidenceCount} linked document${evidenceCount === 1 ? '' : 's'}`}
         </span>
         {onVerify && (
           <button

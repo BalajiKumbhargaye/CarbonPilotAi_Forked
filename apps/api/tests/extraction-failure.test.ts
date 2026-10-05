@@ -12,11 +12,15 @@ const state = vi.hoisted(() => ({
 vi.mock('../src/models/Document', () => ({
   DocumentModel: {
     findById: vi.fn(async () => state.document),
+    findOneAndUpdate: vi.fn(async (_query: any, update: any) => {
+      Object.assign(state.document, update.$set);
+      return state.document;
+    }),
   },
 }));
 vi.mock('../src/models/DocumentExtraction', () => ({
   DocumentExtractionModel: {
-    findOne: vi.fn(),
+    findOne: vi.fn(() => ({ sort: async () => null })),
     create: vi.fn(async (values: any) => {
       state.extractionCreate(values);
       return { ...values, _id: 'extraction-1' };
@@ -68,7 +72,7 @@ describe('document extraction pipeline', () => {
 
     expect(state.document.status).toBe(DocumentStatus.FAILED);
     expect(state.document.processingError).toContain('No readable document content was found on disk');
-    expect(state.document.save).toHaveBeenCalledTimes(2);
+    expect(state.document.save).toHaveBeenCalledTimes(1);
   });
 
   it('stores extracted OCR text and marks the document as extracted when text is available', async () => {
@@ -90,9 +94,39 @@ describe('document extraction pipeline', () => {
     });
 
     expect(extraction.method).toBe('OCR');
+    expect(extraction.text).toContain('Product Carbon Footprint');
+    expect(extraction.pages).toHaveLength(1);
     expect(extraction.fields[0].value).toContain('Product Carbon Footprint');
     expect(state.document.status).toBe(DocumentStatus.EXTRACTED);
-    expect(state.document.save).toHaveBeenCalledTimes(2);
+    expect(state.document.save).toHaveBeenCalledTimes(1);
     expect(state.extractionCreate).toHaveBeenCalledWith(expect.objectContaining({ method: 'OCR' }));
+  });
+
+  it('persists an empty OCR result as a failed extraction instead of reporting success', async () => {
+    state.storageRead.mockResolvedValue(Buffer.from('%PDF-1.4'));
+    state.extractor.mockResolvedValue({
+      method: 'OCR',
+      text: '',
+      pages: [],
+      language: 'eng',
+      errorMessage: 'No readable text found in the uploaded image.',
+      fields: [],
+    });
+
+    await expect(extractionService.runExtraction(state.document._id, {
+      userId: '222222222222222222222222',
+      organizationId: '111111111111111111111111',
+      organizationType: 'SUPPLIER',
+      role: 'SUPPLIER_ADMIN',
+      email: 'supplier@example.test',
+    })).rejects.toMatchObject({ statusCode: 422, code: 'EXTRACTION_FAILED' });
+
+    expect(state.document.status).toBe(DocumentStatus.FAILED);
+    expect(state.document.save).toHaveBeenCalledTimes(2);
+    expect(state.extractionCreate).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'FAILED',
+      errorMessage: 'No readable text found in the uploaded image.',
+      text: '',
+    }));
   });
 });

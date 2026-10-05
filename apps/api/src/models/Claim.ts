@@ -31,6 +31,8 @@ const ClaimSchema = new Schema<IClaimDocument>(
       page: { type: Number },
       section: { type: String },
       sourceText: { type: String },
+      sourceType: { type: String, enum: ['DOCUMENT_EXTRACTION', 'QUESTIONNAIRE'] },
+      extractionMethod: { type: String, enum: ['NATIVE_TEXT', 'OCR', 'NATIVE_TEXT_AND_OCR'] },
     },
     normalizedData: {
       originalValue: { type: Number },

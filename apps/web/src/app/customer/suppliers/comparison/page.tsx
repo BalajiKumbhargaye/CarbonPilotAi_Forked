@@ -160,7 +160,7 @@ export default function SupplierComparisonPage() {
                         <div className="text-xs text-slate-500">{supplier.productName}</div>
                       </td>
                       <td className="px-4 py-3 align-top">{supplier.pricePerUnit != null ? `${supplier.currency || 'USD'} ${supplier.pricePerUnit.toFixed(2)}` : 'No price'} </td>
-                      <td className="px-4 py-3 align-top">{supplier.carbonIntensity != null ? `${supplier.carbonIntensity.toFixed(2)} ${supplier.carbonUnit || 'kgCO2e'}` : 'No carbon data'}</td>
+                      <td className="px-4 py-3 align-top">{supplier.carbonIntensity != null ? `${supplier.carbonIntensity.toFixed(2)} ${supplier.carbonUnit || 'Unit unavailable'}` : 'No carbon data'}</td>
                       <td className="px-4 py-3 align-top text-xs">
                         <div className="font-medium">{supplier.evidenceStatus || 'NOT_AVAILABLE'}</div>
                         <div className="text-slate-500">{supplier.corroborationStatus || 'Not available'}</div>

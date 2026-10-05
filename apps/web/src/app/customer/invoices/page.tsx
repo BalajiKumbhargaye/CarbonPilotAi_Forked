@@ -1,61 +1,75 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Breadcrumb } from '@/components/ui/Breadcrumb';
-import { Button } from '@/components/ui/Button';
-import { StatusBadge } from '@/components/ui/StatusBadge';
-import { DataTable } from '@/components/ui/DataTable';
-import { FileSpreadsheet, Plus, UploadCloud } from 'lucide-react';
+import { Card } from '@/components/ui/Card';
+import { getInvoices, type InvoiceRecord } from '@/lib/procurement';
 
-const mockInvoices = [
-  {
-    _id: 'INV-2024-001',
-    supplier: 'Titan Alloy & Steel Works',
-    date: '2024-05-18',
-    amount: '$320,000',
-    extraction: 'Extracted',
-    itemsCount: 4,
-    status: 'Verified',
-  },
-  {
-    _id: 'INV-2024-002',
-    supplier: 'Nexa Polymer Solutions',
-    date: '2024-05-14',
-    amount: '$148,500',
-    extraction: 'Extracted',
-    itemsCount: 2,
-    status: 'Pending',
-  },
-];
+function formatAmount(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+}
+
+function supplierName(supplier: InvoiceRecord['supplierOrganizationId']) {
+  return typeof supplier === 'string' ? 'Not available' : supplier.name || 'Not available';
+}
 
 export default function CustomerInvoicesPage() {
-  const columns = [
-    { header: 'Invoice Number', accessorKey: '_id' as const, className: 'font-mono text-xs font-semibold' },
-    { header: 'Supplier Organization', accessorKey: 'supplier' as const, className: 'font-medium' },
-    { header: 'Invoice Date', accessorKey: 'date' as const },
-    { header: 'Total Amount', accessorKey: 'amount' as const, className: 'font-bold' },
-    { header: 'Line Items', accessorKey: 'itemsCount' as const },
-    {
-      header: 'Extraction Status',
-      cell: (row: typeof mockInvoices[0]) => <StatusBadge status={row.status} />,
-    },
-  ];
+  const [invoices, setInvoices] = useState<InvoiceRecord[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getInvoices()
+      .then(setInvoices)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Unable to load invoices.'));
+  }, []);
 
   return (
     <div className="space-y-6">
       <Breadcrumb items={[{ label: 'Procurement', href: '/customer/purchases' }, { label: 'Invoices' }]} />
-
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Invoices</h1>
-          <p className="text-sm text-slate-500">Invoices processed for automated purchase mapping and carbon attribution.</p>
-        </div>
-        <Button size="sm" className="gap-1.5">
-          <UploadCloud className="h-4 w-4" /> Upload Invoices
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Invoices</h1>
+        <p className="text-sm text-slate-500">Persisted invoice records. Invoice extraction or verification is not represented here.</p>
       </div>
 
-      <DataTable columns={columns} data={mockInvoices} />
+      {invoices === null && !error && <p role="status" className="text-sm text-slate-500">Loading invoices…</p>}
+      {error && <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</p>}
+      {invoices?.length === 0 && !error && <EmptyState>No invoices available.</EmptyState>}
+      {invoices && invoices.length > 0 && !error && (
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+          <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-800">
+            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500 dark:bg-slate-900">
+              <tr>
+                <th className="px-4 py-3">Invoice number</th>
+                <th className="px-4 py-3">Supplier</th>
+                <th className="px-4 py-3">Invoice date</th>
+                <th className="px-4 py-3">Total amount</th>
+                <th className="px-4 py-3">Line items</th>
+                <th className="px-4 py-3">Extraction status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {invoices.map((invoice) => (
+                <tr key={invoice._id} className="text-slate-700 dark:text-slate-200">
+                  <td className="px-4 py-3 font-mono">{invoice.invoiceNumber}</td>
+                  <td className="px-4 py-3">{supplierName(invoice.supplierOrganizationId)}</td>
+                  <td className="px-4 py-3">{new Date(invoice.invoiceDate).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 font-medium">{formatAmount(invoice.totalAmount, invoice.currency)}</td>
+                  <td className="px-4 py-3">{invoice.items.length}</td>
+                  <td className="px-4 py-3">{invoice.extractionStatus}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
+}
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <Card className="p-6 text-sm text-slate-500">{children}</Card>;
 }

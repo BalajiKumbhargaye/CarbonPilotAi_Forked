@@ -36,6 +36,8 @@ const state = vi.hoisted(() => ({
   notifications: [] as any[],
   claims: [] as any[],
   evidenceLinks: [] as any[],
+  extractions: [] as any[],
+  verificationRuns: [] as any[],
   auditLogs: [] as any[],
   members: [] as any[],
   nextId: 0,
@@ -178,34 +180,37 @@ vi.mock('../src/models/Product', () => ({
 vi.mock('../src/models/Document', () => ({
   DocumentModel: {
     create: vi.fn(async (values: any) => {
-      const document = { ...values, _id: `doc-${++state.nextId}`, uploadedAt: new Date() };
+      const document = { ...values, _id: `doc-${++state.nextId}`, uploadedAt: new Date(), save: vi.fn(async () => document) };
       state.documents.push(document);
       return document;
     }),
+    findById: vi.fn(async (id: any) => state.documents.find((document) => stringId(document._id) === stringId(id)) || null),
     deleteOne: vi.fn(async ({ _id }: any) => { state.documents = state.documents.filter((document) => document._id !== _id); }),
     find: vi.fn((query: any) => queryResult(state.documents.filter((document) => queryMatches(document, query)))),
     findOne: vi.fn((query: any) => queryResult(state.documents.find((document) => queryMatches(document, query)) || null)),
   },
 }));
 vi.mock('../src/models/OrganizationMember', () => ({
-  OrganizationMemberModel: { find: vi.fn(async (query: any) => state.members.filter((member) => queryMatches(member, query))) },
+  OrganizationMemberModel: {
+    find: vi.fn(async (query: any) => state.members.filter((member) => queryMatches(member, query))),
+    findOne: vi.fn(async (query: any) => state.members.find((member) => queryMatches(member, query)) || null),
+  },
 }));
 vi.mock('../src/models/Notification', () => ({
   NotificationModel: { insertMany: vi.fn(async (items: any[]) => { state.notifications.push(...items); }) },
 }));
 vi.mock('../src/models/Claim', () => ({
   ClaimModel: {
-    findOne: vi.fn(async (query: any) => state.claims.find((claim) =>
-      stringId(claim.dataRequestId) === stringId(query.dataRequestId)
-      && stringId(claim.sourceReference?.questionResponseId) === stringId(query['sourceReference.questionResponseId'])
-      && claim.type === query.type
-      && stringId(claim.value) === stringId(query.value)
-    ) || null),
+    findOne: vi.fn(async (query: any) => state.claims.find((claim) => Object.entries(query).every(([key, expected]) => {
+      const actual = key.split('.').reduce((value: any, part) => value?.[part], claim);
+      return stringId(actual) === stringId(expected);
+    })) || null),
     create: vi.fn(async (values: any) => {
       const claim = { ...values, _id: `claim-${++state.nextId}` };
       state.claims.push(claim);
       return claim;
     }),
+    findById: vi.fn(async (id: any) => state.claims.find((claim) => stringId(claim._id) === stringId(id)) || null),
   },
 }));
 vi.mock('../src/models/ClaimEvidenceLink', () => ({
@@ -215,7 +220,30 @@ vi.mock('../src/models/ClaimEvidenceLink', () => ({
       state.evidenceLinks.push(link);
       return link;
     }),
+    findOne: vi.fn(async (query: any) => state.evidenceLinks.find((link) => queryMatches(link, query)) || null),
+    find: vi.fn((query: any) => queryResult(state.evidenceLinks.filter((link) => queryMatches(link, query)))),
   },
+}));
+vi.mock('../src/models/DocumentExtraction', () => ({
+  DocumentExtractionModel: {
+    findOne: vi.fn((query: any) => {
+      const extraction = state.extractions.find((item) => queryMatches(item, query)) || null;
+      return { ...queryResult(extraction), sort: () => queryResult(extraction) };
+    }),
+    create: vi.fn(async (values: any) => {
+      const extraction = { ...values, _id: `extraction-${++state.nextId}` };
+      state.extractions.push(extraction);
+      return extraction;
+    }),
+  },
+}));
+vi.mock('../src/models/VerificationRun', () => ({
+  VerificationRunModel: {
+    find: vi.fn((query: any) => queryResult(state.verificationRuns.filter((run) => queryMatches(run, query)))),
+  },
+}));
+vi.mock('../src/models/User', () => ({
+  UserModel: { findById: vi.fn(async () => ({ email: 'buyer-a@example.test' })) },
 }));
 vi.mock('../src/models/AuditLog', () => ({
   AuditLogModel: {
@@ -270,6 +298,8 @@ function resetState() {
   state.notifications = [];
   state.claims = [];
   state.evidenceLinks = [];
+  state.extractions = [];
+  state.verificationRuns = [];
   state.auditLogs = [];
   state.members = [
     { organizationId: ids.supplierOrgA, userId: '555555555555555555555555', status: 'ACTIVE' },

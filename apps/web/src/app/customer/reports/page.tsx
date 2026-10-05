@@ -4,13 +4,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { getProcurementCarbonReport, type ProcurementCarbonReportResponse } from '@/lib/reports';
 
+const currentYear = new Date().getFullYear();
 const periodOptions = [
   { label: 'All data', value: '' },
-  { label: '2026', value: '2026' },
-  { label: 'Q1 2026', value: 'Q1 2026' },
-  { label: 'Q2 2026', value: 'Q2 2026' },
-  { label: 'Q3 2026', value: 'Q3 2026' },
-  { label: 'Q4 2026', value: 'Q4 2026' },
+  { label: String(currentYear), value: String(currentYear) },
+  ...[1, 2, 3, 4].map((quarter) => ({
+    label: `Q${quarter} ${currentYear}`,
+    value: `Q${quarter} ${currentYear}`,
+  })),
 ];
 
 function formatNumber(value: number | undefined, digits = 0) {
@@ -23,6 +24,23 @@ function formatEmissions(value: number | undefined) {
   return `${formatNumber(value, 2)} kgCO2e`;
 }
 
+function formatProcurementTotals(report: ProcurementCarbonReportResponse | null) {
+  const totals = report?.summary.totalProcurementValueByCurrency;
+  if (!totals?.length) return '—';
+  return totals.map(({ currency, amount }) => {
+    if (currency === 'UNKNOWN') return `Currency unavailable ${formatNumber(amount, 2)}`;
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency,
+        maximumFractionDigits: 2,
+      }).format(amount);
+    } catch {
+      return `${currency} ${formatNumber(amount, 2)}`;
+    }
+  }).join(' · ');
+}
+
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-950">
@@ -33,7 +51,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 export default function CustomerReportsPage() {
-  const [period, setPeriod] = useState('2026');
+  const [period, setPeriod] = useState(String(currentYear));
   const [report, setReport] = useState<ProcurementCarbonReportResponse | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -50,6 +68,7 @@ export default function CustomerReportsPage() {
       })
       .catch(() => {
         if (!active) return;
+        setReport(null);
         setError('Unable to load the procurement reporting dashboard.');
       })
       .finally(() => {
@@ -64,7 +83,7 @@ export default function CustomerReportsPage() {
     { label: 'Total quantity', value: formatNumber(report?.summary.totalProcurementQuantity) },
     { label: 'Suppliers', value: formatNumber(report?.summary.suppliersCount) },
     { label: 'Products', value: formatNumber(report?.summary.productsCount) },
-    { label: 'Procurement value', value: report?.summary.totalProcurementValue ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(report.summary.totalProcurementValue) : '—' },
+    { label: 'Procurement value', value: formatProcurementTotals(report) },
     { label: 'Expected emissions', value: formatEmissions(report?.summary.totalExpectedEmissions) },
     { label: 'Actual emissions', value: formatEmissions(report?.summary.totalActualEmissions) },
     { label: 'Variance', value: formatEmissions(report?.summary.totalVariance) },
@@ -98,7 +117,11 @@ export default function CustomerReportsPage() {
 
       {loading ? (
         <div className="rounded-xl border border-slate-200 bg-white p-8 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">Loading report…</div>
-      ) : (
+      ) : error ? null : report?.purchases.length === 0 ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950">
+          No reporting data available for this period.
+        </div>
+      ) : report ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {sections.slice(0, 8).map((item) => (
@@ -179,7 +202,7 @@ export default function CustomerReportsPage() {
             </CardContent>
           </Card>
         </>
-      )}
+      ) : null}
     </div>
   );
 }

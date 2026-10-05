@@ -39,9 +39,9 @@ export async function runSeed() {
 
     const passwordHash = await bcrypt.hash('CarbonPilot2026!', 10);
 
-    // 1. Customer Organization (e.g. Apex Mobility Corp - Global EV & Automotive Manufacturer)
+    // Seed organizations are explicitly labeled so generated demo records are not mistaken for live customers.
     const customerOrg = await OrganizationModel.create({
-      name: 'Apex Mobility Corp',
+      name: 'Apex Mobility Corp (Demo)',
       type: OrganizationType.CUSTOMER,
       industry: 'Automotive & Heavy Mobility',
       gstin: '27AAACA1234A1Z5',
@@ -78,9 +78,9 @@ export async function runSeed() {
       status: UserStatus.ACTIVE,
     });
 
-    // 2. Supplier Organization 1: Titan Alloy & Steel Works (Raw Materials)
+    // 2. Demo supplier organization 1: Titan Alloy & Steel Works (Raw Materials)
     const supplierOrg1 = await OrganizationModel.create({
-      name: 'Titan Alloy & Steel Works',
+      name: 'Titan Alloy & Steel Works (Demo)',
       type: OrganizationType.SUPPLIER,
       industry: 'Primary Metals & Metallurgy',
       gstin: '24AAACT9876B1Z2',
@@ -106,7 +106,7 @@ export async function runSeed() {
     const supplier1 = await SupplierModel.create({
       organizationId: supplierOrg1._id,
       industry: 'Steel & Alloys',
-      verificationStatus: VerificationStatus.VERIFIED,
+      verificationStatus: VerificationStatus.IN_PROGRESS,
       dataCompleteness: 85,
       evidenceSupport: 90,
     });
@@ -134,13 +134,13 @@ export async function runSeed() {
         methodology: 'ISO 14067:2018',
         reportingPeriod: 'FY2023-2024',
         boundary: 'Cradle-to-Gate',
-        verificationStatus: VerificationStatus.VERIFIED,
+        verificationStatus: VerificationStatus.IN_PROGRESS,
       },
     });
 
-    // 3. Supplier Organization 2: Nexa Polymer Solutions
+    // 3. Demo supplier organization 2: Nexa Polymer Solutions
     const supplierOrg2 = await OrganizationModel.create({
-      name: 'Nexa Polymer Solutions',
+      name: 'Nexa Polymer Solutions (Demo)',
       type: OrganizationType.SUPPLIER,
       industry: 'Chemicals & Polymers',
       gstin: '29AAACN5544C1Z1',

@@ -62,10 +62,45 @@ export interface PurchaseInput {
   status?: PurchaseStatus;
 }
 
+export interface ProcurementParty {
+  _id: string;
+  name: string;
+}
+
+export interface InvoiceRecord {
+  _id: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  currency: string;
+  totalAmount: number;
+  items: Array<{ description: string; quantity: number; unit: string; unitPrice: number; totalPrice: number }>;
+  supplierOrganizationId: string | ProcurementParty;
+  extractionStatus: string;
+}
+
+export interface PurchaseOrderRecord {
+  _id: string;
+  orderNumber: string;
+  orderDate: string;
+  currency: string;
+  totalAmount: number;
+  items: Array<{ description: string; quantity: number; unit: string; unitPrice: number; totalPrice: number }>;
+  supplierOrganizationId: string | ProcurementParty;
+  status: string;
+}
+
 function getToken() {
   const token = getStoredSession()?.token;
   if (!token) throw new Error('Your session has expired. Please sign in again.');
   return token;
+}
+
+export function getInvoices() {
+  return apiFetch<InvoiceRecord[]>('/api/procurement/invoices', {}, getToken());
+}
+
+export function getPurchaseOrders() {
+  return apiFetch<PurchaseOrderRecord[]>('/api/procurement/purchase-orders', {}, getToken());
 }
 
 function queryString(filters: PurchaseFilters = {}) {

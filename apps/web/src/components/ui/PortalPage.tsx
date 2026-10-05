@@ -17,7 +17,7 @@ export function PortalPage({ title, subtitle, stats = [], actionLabel, onAction,
     <div className="space-y-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">Foundation status</p>
+          <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">Portal</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{title}</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>

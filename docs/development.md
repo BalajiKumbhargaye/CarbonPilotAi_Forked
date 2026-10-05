@@ -34,9 +34,14 @@ npm test --workspace=@carbonpilot/api
 
 ## Start apps
 
+Run each command in a separate terminal:
+
 ```bash
-npm run dev --workspace=@carbonpilot/api
-npm run dev --workspace=@carbonpilot/web
+npm run dev:api
+```
+
+```bash
+npm run dev:web
 ```
 
 ## Notes

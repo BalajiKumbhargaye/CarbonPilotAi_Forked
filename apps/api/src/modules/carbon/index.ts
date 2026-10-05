@@ -306,22 +306,24 @@ export class CarbonService {
     }
 
     const claim = await this.resolveRelevantClaim(product._id.toString(), purchase.supplierId?.toString(), params.claimId);
-    const candidateFactor = params.customFactor ?? (product.carbonData?.pcf ?? undefined);
-    const candidateUnit = product.carbonData?.unit ?? claim?.unit ?? 'kgCO2e/kg';
+    const candidateFactor = params.customFactor ?? claim?.value;
+    const candidateUnit = claim?.unit ?? 'kgCO2e/kg';
 
     let factorValue = Number(candidateFactor ?? claim?.value ?? 0);
     let factorUnit = claim?.unit || candidateUnit || 'kgCO2e/kg';
     let factorSource = claim ? `Supplier Claim (${claim.reportingPeriod || 'reporting period not provided'})` : 'Manual Input Factor';
-    let methodology = claim?.methodology || product.carbonData?.methodology || 'GHG Protocol';
+    let methodology = claim?.methodology || 'Not provided';
     let evidenceStatus: ClaimStatus = claim?.status || ClaimStatus.PENDING;
     let claimId = claim?._id?.toString();
     let reason: string | undefined;
     let status: CarbonCalculationStatus = CarbonCalculationStatus.CALCULATED;
     let totalEmissions = 0;
+    let requestedFactorFound = !params.carbonFactorId;
 
     if (params.carbonFactorId) {
       const factor = await CarbonFactorModel.findById(params.carbonFactorId);
       if (factor) {
+        requestedFactorFound = true;
         factorValue = Number(factor.value);
         factorUnit = factor.unit;
         factorSource = factor.source;
@@ -330,12 +332,18 @@ export class CarbonService {
       }
     }
 
-    if (claim && [ClaimStatus.UNSUPPORTED, ClaimStatus.NEEDS_REVIEW, ClaimStatus.INCONSISTENT].includes(claim.status)) {
+    if (claim && ![ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(claim.status)) {
       status = CarbonCalculationStatus.BLOCKED;
-      reason = 'Cannot calculate procurement emissions. Carbon claim is unsupported or inconsistent.';
-    } else if (!claim && !params.customFactor && !params.carbonFactorId && !product.carbonData?.pcf) {
+      reason = 'Cannot calculate procurement emissions. Carbon claim has not met the existing support and verification rules.';
+    } else if (!claim && !params.carbonFactorId) {
       status = CarbonCalculationStatus.BLOCKED;
-      reason = 'Cannot calculate procurement emissions. No compatible carbon intensity is available for this purchase.';
+      reason = 'Cannot calculate procurement emissions. No supported claim or configured carbon factor is available for this purchase.';
+    } else if (params.customFactor !== undefined && (!claim || Number(params.customFactor) !== Number(claim.value))) {
+      status = CarbonCalculationStatus.BLOCKED;
+      reason = 'Cannot calculate procurement emissions. A custom input cannot override supported claim data without verification.';
+    } else if (!requestedFactorFound) {
+      status = CarbonCalculationStatus.BLOCKED;
+      reason = 'Cannot calculate procurement emissions. The selected carbon factor was not found.';
     }
 
     if (status !== CarbonCalculationStatus.BLOCKED && !canApplyCarbonIntensity(purchase.unit, factorUnit)) {
@@ -384,7 +392,9 @@ export class CarbonService {
       reportingPeriod: claim?.normalizedData?.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod,
     });
 
-    const normalizedValue = (normalized?.normalizedValue ?? Number(factorValue)) || 1;
+    const normalizedValue = normalized && typeof normalized.normalizedValue === 'number' && Number.isFinite(normalized.normalizedValue)
+      ? normalized.normalizedValue
+      : Number(factorValue);
     totalEmissions = Number((purchase.quantity * normalizedValue).toFixed(6));
 
     const calculation = await CarbonCalculationModel.create({

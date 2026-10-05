@@ -184,9 +184,6 @@ export const SupplierLayout: React.FC<{ children: React.ReactNode }> = ({ childr
             <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
               <Building2 className="h-4 w-4 text-teal-600" />
               <span>{session?.user.organization.name ?? 'Supplier Organization'} (Supplier)</span>
-              <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-semibold text-teal-800 dark:bg-teal-950 dark:text-teal-300">
-                Verified Vendor
-              </span>
             </div>
           </div>
 

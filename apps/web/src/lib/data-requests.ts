@@ -48,6 +48,66 @@ export interface DataRequestDocumentLink {
   _id: string;
   filename: string;
   downloadPath: string;
+  documentType?: string;
+  uploadedAt?: string;
+  status?: string;
+  processingError?: string;
+  mimeType?: string;
+  extraction?: {
+    method?: string;
+    status?: string;
+    text?: string;
+    errorMessage?: string;
+    pageCount?: number;
+    pages?: Array<{ pageNumber: number; text: string; method: string; confidence?: number }>;
+    fields?: Array<{
+      field: string;
+      value?: string | number | boolean | null;
+      unit?: string;
+      page?: number;
+      sourceText?: string;
+      confidence?: number;
+      extractionStatus?: string;
+    }>;
+  } | null;
+  claims?: Array<{
+    _id: string;
+    type: string;
+    value: string | number;
+    unit?: string;
+    methodology?: string;
+    reportingPeriod?: string;
+    boundary?: string;
+    status: string;
+    sourceReference?: {
+      page?: number;
+      section?: string;
+      sourceText?: string;
+      sourceType?: string;
+      extractionMethod?: string;
+    };
+    evidence?: { page?: number; section?: string; sourceText?: string; relationshipType?: string };
+    eligibleForCarbonCalculation?: boolean;
+    verification?: {
+      overallStatus: string;
+      checks?: Array<{
+        checkType: string;
+        result: string;
+        explanation: string;
+        expected?: string;
+        observed?: string;
+        sourcePage?: number;
+      }>;
+      issues?: Array<{
+        type?: string;
+        description: string;
+        recommendedAction?: string;
+        severity?: string;
+        status?: string;
+      }>;
+      corroborationResults?: Array<{ result: string; source?: string }>;
+    } | null;
+  }>;
 }
 
 export interface DataRequestResponse {

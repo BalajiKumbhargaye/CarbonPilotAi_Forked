@@ -64,7 +64,15 @@ export class VerificationService {
 
   private findFieldValue(fields: IExtractionField[] = [], candidates: string[]): IExtractionField | undefined {
     const normalizedFields = fields.map((field) => ({
-      ...field,
+      field: field.field,
+      value: field.value,
+      unit: field.unit,
+      confidence: field.confidence,
+      page: field.page,
+      sourceText: field.sourceText,
+      section: field.section,
+      tableReference: field.tableReference,
+      extractionStatus: field.extractionStatus,
       normalizedKey: this.normalizeKey(String(field.field)),
     }));
 

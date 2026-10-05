@@ -1,135 +1,97 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, Building2, CheckCircle2, ClipboardList, Factory, Leaf, PackageCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
-import { MetricCard } from '@/components/ui/MetricCard';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { StatusBadge } from '@/components/ui/StatusBadge';
+import { Card } from '@/components/ui/Card';
 import { getDataRequestSummary, type DataRequestSummary } from '@/lib/data-requests';
 
 export default function SupplierDashboardPage() {
   const [dataRequestSummary, setDataRequestSummary] = useState<DataRequestSummary | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getDataRequestSummary().then(setDataRequestSummary).catch(() => setDataRequestSummary(null));
+    getDataRequestSummary()
+      .then(setDataRequestSummary)
+      .catch(() => setDataRequestSummary(null))
+      .finally(() => setLoading(false));
   }, []);
+
+  const pending = dataRequestSummary
+    ? (dataRequestSummary.counts.SENT ?? 0) + (dataRequestSummary.counts.NEEDS_CLARIFICATION ?? 0)
+    : loading ? 'Loading…' : 'Not available';
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
           <p className="text-sm font-medium text-teal-600 dark:text-teal-400">Supplier workspace</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-            Supplier Operations Overview
+            Supplier Overview
           </h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Manage company profile, document evidence, and customer requests as the foundation for later business automation.
+            Review persisted customer requests and manage your document evidence.
           </p>
         </div>
-
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap gap-3">
           <Link href="/supplier/documents">
-            <Button variant="outline" size="sm" className="gap-1.5">
-              Upload Evidence
-            </Button>
+            <Button variant="outline" size="sm">Documents</Button>
           </Link>
-          <Link href="/supplier/evidence-packs">
-            <Button size="sm" className="gap-1.5">
-              Review Audit Pack
-            </Button>
+          <Link href="/supplier/data-requests">
+            <Button size="sm">Data Requests</Button>
           </Link>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <MetricCard title="Active Customers" value="14" change="+2 this quarter" isPositive icon={Building2} />
-        <MetricCard title="Pending Requests" value={dataRequestSummary ? String((dataRequestSummary.counts.SENT || 0) + (dataRequestSummary.counts.NEEDS_CLARIFICATION || 0)) : '—'} change="Awaiting supplier response" isPositive={false} icon={PackageCheck} />
-        <MetricCard title="Evidence Coverage" value="81%" change="+7% in 30 days" isPositive icon={ShieldCheck} />
-        <MetricCard title="Carbon Data" value="42" change="records updated" isPositive icon={Leaf} />
-        <MetricCard title="Verification Status" value="Healthy" change="No critical issues" isPositive icon={CheckCircle2} />
-      </div>
-
-      <section className="border-y border-slate-200 py-4" aria-labelledby="my-data-requests-title">
-        <div className="mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><ClipboardList className="h-4 w-4 text-teal-700" /><h2 id="my-data-requests-title" className="text-sm font-semibold text-slate-900">My Data Requests</h2></div><Link href="/supplier/data-requests" className="text-xs font-semibold text-teal-800 hover:underline">Open requests</Link></div>
-        <div className="grid grid-cols-2 gap-y-3 sm:grid-cols-4"><div><p className="text-xs text-slate-500">Pending</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SENT ?? '—'}</p></div><div><p className="text-xs text-slate-500">In progress</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.IN_PROGRESS ?? '—'}</p></div><div><p className="text-xs text-slate-500">Submitted</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.SUBMITTED ?? '—'}</p></div><div><p className="text-xs text-slate-500">Clarification required</p><p className="mt-1 text-lg font-semibold tabular-nums">{dataRequestSummary?.counts.NEEDS_CLARIFICATION ?? '—'}</p></div></div>
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Operational readiness</CardTitle>
-            <CardDescription>Foundation modules are active and routed for future business workflows.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="rounded-lg border border-teal-200 bg-teal-50/60 p-4 dark:border-teal-900 dark:bg-teal-950/30">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-300">Company profile</p>
-                  <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">Supplier verification metadata and facility data are linked and staged.</p>
-                </div>
-                <StatusBadge status="Healthy" />
-              </div>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900/60">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Workflow modules</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-lg border border-slate-200 p-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">Facilities</div>
-                <div className="rounded-lg border border-slate-200 p-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">Products</div>
-                <div className="rounded-lg border border-slate-200 p-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">Questionnaires</div>
-                <div className="rounded-lg border border-slate-200 p-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">Evidence packs</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Priority actions</CardTitle>
-            <CardDescription>Actions to continue after the foundation is complete.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/30">
-              Refresh product carbon data for the next reporting cycle.
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/60">
-              Confirm outstanding customer questionnaire replies.
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/60">
-              Review verification issues before sending evidence packs.
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Recent supplier activity</CardTitle>
-              <CardDescription>Latest updates across documents, questionnaires, and requests.</CardDescription>
-            </div>
-            <Link href="/supplier/documents" className="inline-flex items-center gap-1 text-xs font-semibold text-teal-600 hover:underline dark:text-teal-400">
-              Open documents <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {[
-            'Customer request for facility emissions data was created and routed to the supplier team.',
-            'EPD and certificate documents were uploaded and marked for future verification review.',
-            'Questionnaire response workflow remains in the scaffolded foundation state.',
-          ].map((item, index) => (
-            <div key={index} className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-800">
-              <div className="mt-0.5 rounded-md bg-teal-100 p-1.5 text-teal-700 dark:bg-teal-950 dark:text-teal-300">
-                <Factory className="h-3.5 w-3.5" />
-              </div>
-              <p className="text-slate-600 dark:text-slate-300">{item}</p>
-            </div>
-          ))}
-        </CardContent>
+      <Card className="p-6">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">My Data Requests</h2>
+        <p className="mt-1 text-sm text-slate-500">Counts come from requests associated with your organization.</p>
+        <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-5">
+          <Count label="Total" value={dataRequestSummary ? String(dataRequestSummary.total) : loading ? 'Loading…' : 'Not available'} />
+          <Count label="Awaiting response" value={String(pending)} />
+          <Count label="In progress" value={count(dataRequestSummary, 'IN_PROGRESS', loading)} />
+          <Count label="Submitted" value={count(dataRequestSummary, 'SUBMITTED', loading)} />
+          <Count label="Needs clarification" value={count(dataRequestSummary, 'NEEDS_CLARIFICATION', loading)} />
+        </div>
       </Card>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Feature title="Documents and evidence" href="/supplier/documents">
+          Upload supporting files and review extraction and verification results when available.
+        </Feature>
+        <Feature title="Verification feedback" href="/supplier/verification-issues">
+          Review feedback linked to your data requests. No aggregate verification status is available here.
+        </Feature>
+      </div>
+
+      <p className="text-sm text-slate-500">
+        Customer counts, evidence coverage, carbon-record totals, company readiness, and recent activity are not available as persisted dashboard summaries.
+      </p>
     </div>
+  );
+}
+
+function count(summary: DataRequestSummary | null, key: keyof DataRequestSummary['counts'], loading: boolean) {
+  if (loading) return 'Loading…';
+  return summary ? String(summary.counts[key] ?? 0) : 'Not available';
+}
+
+function Count({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function Feature({ title, href, children }: { title: string; href: string; children: React.ReactNode }) {
+  return (
+    <Card className="p-5">
+      <h2 className="font-semibold text-slate-900 dark:text-slate-100">
+        <Link href={href} className="hover:underline">{title}</Link>
+      </h2>
+      <p className="mt-2 text-sm text-slate-500">{children}</p>
+    </Card>
   );
 }

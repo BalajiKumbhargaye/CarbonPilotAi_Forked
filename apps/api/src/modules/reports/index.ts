@@ -93,9 +93,16 @@ export function buildProcurementCarbonReport(purchases: Array<{
   const summary = {
     totalPurchases: purchases.length,
     totalProcurementQuantity: purchases.reduce((sum, purchase) => sum + (Number.isFinite(Number(purchase.quantity)) ? Number(purchase.quantity) : 0), 0),
-    suppliersCount: new Set(purchases.map((purchase) => purchase.supplierId ? purchase.supplierId.toString() : '').filter(Boolean)).size,
-    productsCount: new Set(purchases.map((purchase) => purchase.productId ? purchase.productId.toString() : '').filter(Boolean)).size,
-    totalProcurementValue: purchases.reduce((sum, purchase) => sum + asNumber(purchase.totalAmount), 0),
+    suppliersCount: new Set(purchases.map((purchase) => purchase.supplierId ? (purchase.supplierId.toString?.() ?? '') : '').filter(Boolean)).size,
+    productsCount: new Set(purchases.map((purchase) => purchase.productId ? (purchase.productId.toString?.() ?? '') : '').filter(Boolean)).size,
+    totalProcurementValueByCurrency: Array.from(
+      purchases.reduce((totals, purchase) => {
+        const currency = purchase.currency?.trim().toUpperCase() || 'UNKNOWN';
+        totals.set(currency, (totals.get(currency) || 0) + asNumber(purchase.totalAmount));
+        return totals;
+      }, new Map<string, number>()),
+      ([currency, amount]) => ({ currency, amount })
+    ),
     totalExpectedEmissions: purchases.reduce((sum, purchase) => sum + (Number.isFinite(Number(purchase.expected?.emissions)) ? Number(purchase.expected?.emissions) : 0), 0),
     totalActualEmissions: purchases.reduce((sum, purchase) => sum + (Number.isFinite(Number(purchase.actual?.emissions)) ? Number(purchase.actual?.emissions) : 0), 0),
     totalVariance: purchases.reduce((sum, purchase) => sum + (Number.isFinite(Number(purchase.variance)) ? Number(purchase.variance) : 0), 0),

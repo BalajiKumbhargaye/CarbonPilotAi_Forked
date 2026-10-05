@@ -195,9 +195,6 @@ export const CustomerLayout: React.FC<{ children: React.ReactNode }> = ({ childr
             <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
               <Building2 className="h-4 w-4 text-emerald-600" />
               <span>{session?.user.organization.name ?? 'Customer Organization'} (Customer)</span>
-              <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                Verified Buyer
-              </span>
             </div>
           </div>
 
@@ -213,7 +210,6 @@ export const CustomerLayout: React.FC<{ children: React.ReactNode }> = ({ childr
               className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <Bell className="h-5 w-5" />
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-emerald-500" />
             </Link>
           </div>
         </header>

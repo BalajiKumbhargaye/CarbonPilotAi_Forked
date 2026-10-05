@@ -39,7 +39,9 @@ export class ProcurementService {
     const filter = orgId
       ? { $or: [{ customerOrganizationId: orgId }, { supplierOrganizationId: orgId }] }
       : {};
-    return InvoiceModel.find(filter).populate('documentId');
+    return InvoiceModel.find(filter)
+      .populate('supplierOrganizationId', 'name')
+      .populate('documentId');
   }
 
   async createInvoice(data: Record<string, any>) {
@@ -50,7 +52,7 @@ export class ProcurementService {
     const filter = orgId
       ? { $or: [{ customerOrganizationId: orgId }, { supplierOrganizationId: orgId }] }
       : {};
-    return PurchaseOrderModel.find(filter);
+    return PurchaseOrderModel.find(filter).populate('supplierOrganizationId', 'name');
   }
 
   async createPurchaseOrder(data: Record<string, any>, customerOrgId: string) {

@@ -3,9 +3,10 @@
 import { ChangeEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Check, Download, FileText, LoaderCircle, UploadCloud } from 'lucide-react';
+import { ArrowLeft, Check, Download, FileText, LoaderCircle, RefreshCw, UploadCloud } from 'lucide-react';
 import { Breadcrumb } from '@/components/ui/Breadcrumb';
 import { Button } from '@/components/ui/Button';
+import { extractEvidence } from '@/lib/evidence';
 import {
   downloadDataRequestDocument,
   getDataRequest,
@@ -26,6 +27,10 @@ function responseInputValue(value: unknown) {
   return value === undefined || value === null ? '' : String(value);
 }
 
+function fieldLabel(field: string) {
+  return field.toLowerCase().replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function statusClass(status: DataRequestStatus) {
   if (status === 'SUBMITTED' || status === 'COMPLETED') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
   if (status === 'NEEDS_CLARIFICATION') return 'border-rose-200 bg-rose-50 text-rose-800';
@@ -42,7 +47,9 @@ export default function SupplierDataRequestDetailPage() {
   const [savingItem, setSavingItem] = useState('');
   const [uploadingItem, setUploadingItem] = useState('');
   const [reusingItem, setReusingItem] = useState('');
+  const [retryingDocument, setRetryingDocument] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -52,6 +59,19 @@ export default function SupplierDataRequestDetailPage() {
     setRequest(data);
     setValues(Object.fromEntries(data.requestedItems.map((item) => [item._id, responseInputValue(item.response?.value ?? item.response?.answer)])));
     setUnits(Object.fromEntries(data.requestedItems.map((item) => [item._id, item.response?.unit || item.unit || ''])));
+  };
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setError('');
+    try {
+      await load();
+      setNotice('Latest persisted Data Request results loaded.');
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh the Data Request.');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   useEffect(() => {
@@ -94,9 +114,17 @@ export default function SupplierDataRequestDetailPage() {
     setError('');
     setNotice('');
     try {
-      await uploadDataRequestDocument(requestId, itemId, file);
+      const uploaded = await uploadDataRequestDocument(requestId, itemId, file);
       await load();
-      setNotice('Evidence uploaded and attached to this requirement.');
+      if (uploaded.status === 'FAILED') {
+        setError(uploaded.processingError || 'The document was uploaded, but extraction failed.');
+      } else if (uploaded.status === 'NEEDS_REVIEW') {
+        setNotice('The document was uploaded. Processing completed with fields or claims requiring review.');
+      } else if (uploaded.status === 'PROCESSING' || uploaded.status === 'UPLOADED') {
+        setNotice('The document was uploaded and processing is still in progress. Refresh to check for the persisted result.');
+      } else {
+        setNotice('The document was uploaded and extracted. The buyer can review its claims and verification details.');
+      }
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : 'Unable to upload evidence.');
     } finally {
@@ -126,6 +154,21 @@ export default function SupplierDataRequestDetailPage() {
     } finally { setReusingItem(''); }
   };
 
+  const retryDocument = async (documentId: string) => {
+    setRetryingDocument(documentId);
+    setError('');
+    setNotice('');
+    try {
+      await extractEvidence(documentId);
+      await load();
+      setNotice('Extraction retry completed. Review the updated processing status and extracted claims.');
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : 'Unable to retry document extraction.');
+    } finally {
+      setRetryingDocument('');
+    }
+  };
+
   const submit = async () => {
     if (!request || !window.confirm('Submit this data request? The buyer will receive your current responses.')) return;
     setSubmitting(true);
@@ -149,11 +192,12 @@ export default function SupplierDataRequestDetailPage() {
     <Breadcrumb items={[{ label: 'Data', href: '/supplier/data-requests' }, { label: 'Data Requests', href: '/supplier/data-requests' }, { label: request.title }]} />
     <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between">
       <div><Link href="/supplier/data-requests" className="mb-2 inline-flex items-center gap-1 text-xs font-semibold text-teal-800 hover:underline"><ArrowLeft className="h-3.5 w-3.5" />Incoming requests</Link><h1 className="text-2xl font-bold text-slate-950">{request.title}</h1><p className="mt-1 text-sm text-slate-600">Requested by {request.customerOrganization?.name || 'Buyer'}{request.product?.name ? ` · ${request.product.name}` : ''}{request.deadline ? ` · Due ${new Date(request.deadline).toLocaleDateString()}` : ''}</p></div>
-      <div className="flex items-center gap-3"><span className={`inline-flex border px-2.5 py-1.5 text-xs font-semibold ${statusClass(request.status)}`}>{request.status.replaceAll('_', ' ')}</span><span className="text-sm tabular-nums text-slate-600">{request.completion.completed}/{request.completion.total}</span></div>
+      <div className="flex flex-wrap items-center gap-3"><Button size="sm" variant="outline" disabled={refreshing} onClick={refresh}>{refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{refreshing ? 'Refreshing...' : 'Refresh results'}</Button><span className={`inline-flex border px-2.5 py-1.5 text-xs font-semibold ${statusClass(request.status)}`}>{request.status.replaceAll('_', ' ')}</span><span className="text-sm tabular-nums text-slate-600">{request.completion.completed}/{request.completion.total}</span></div>
     </header>
 
     {error && <p role="alert" className="border-l-4 border-rose-600 bg-rose-50 px-4 py-3 text-sm text-rose-900">{error}</p>}
     {notice && <p role="status" className="border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{notice}</p>}
+    {uploadingItem && <p role="status" aria-live="polite" className="border-l-4 border-cyan-600 bg-cyan-50 px-4 py-3 text-sm text-cyan-950">Uploading document. OCR and structured extraction run automatically after the upload is stored.</p>}
     {request.description && <p className="max-w-3xl whitespace-pre-wrap text-sm text-slate-700">{request.description}</p>}
     {request.clarificationMessage && <div className="border-l-4 border-rose-500 bg-rose-50 px-4 py-3"><p className="text-xs font-semibold uppercase text-rose-800">Buyer clarification</p><p className="mt-1 whitespace-pre-wrap text-sm text-rose-950">{request.clarificationMessage}</p></div>}
     {request.status === 'SUBMITTED' && <p className="border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Your submission is with the buyer. Changes are locked until clarification is requested.</p>}
@@ -177,10 +221,27 @@ export default function SupplierDataRequestDetailPage() {
             {item.responseType === 'MULTI_SELECT' && <select multiple disabled={locked} value={(values[item._id] || '').split('\u001f').filter(Boolean)} onChange={(event) => setValues((current) => ({ ...current, [item._id]: Array.from(event.target.selectedOptions).map((option) => option.value).join('\u001f') }))} className="response-input h-24 py-2">{item.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select>}
             {item.responseType === 'DOCUMENT' && <p className="text-xs text-slate-600">Attach a PDF, PNG, JPG, or JPEG file up to 25 MB.</p>}
             {(item.responseType === 'DOCUMENT' || item.requiresEvidence) && !locked && <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-teal-800 hover:underline"><UploadCloud className="h-4 w-4" />{uploadingItem === item._id ? 'Uploading...' : 'Upload evidence'}<input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event)} className="sr-only" /></label>}
-            {item.response?.evidenceDocuments.map((document) => <button key={document._id} type="button" onClick={async () => { try { const blob = await downloadDataRequestDocument(document, requestId); const url = URL.createObjectURL(blob); const anchor = window.document.createElement('a'); anchor.href = url; anchor.download = document.filename; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (downloadError) { setError(downloadError instanceof Error ? downloadError.message : 'Unable to download evidence.'); } }} className="flex items-center gap-2 text-xs font-medium text-slate-700 hover:text-teal-800"><FileText className="h-4 w-4" />{document.filename}<Download className="h-3.5 w-3.5" /></button>)}
+            {item.response?.evidenceDocuments.map((document) => <div key={document._id} className="space-y-2 border border-slate-200 bg-white p-3">
+              <button type="button" onClick={async () => { try { const blob = await downloadDataRequestDocument(document, requestId); const url = URL.createObjectURL(blob); const anchor = window.document.createElement('a'); anchor.href = url; anchor.download = document.filename; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (downloadError) { setError(downloadError instanceof Error ? downloadError.message : 'Unable to download evidence.'); } }} className="flex items-center gap-2 text-xs font-medium text-slate-700 hover:text-teal-800"><FileText className="h-4 w-4" />{document.filename}<Download className="h-3.5 w-3.5" /></button>
+              <p className="text-xs text-slate-600">{document.documentType || 'Document type unavailable'}{document.uploadedAt ? ` · Uploaded ${new Date(document.uploadedAt).toLocaleString()}` : ''}</p>
+              <ol aria-label="Document processing lifecycle" className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+                <li className="border-l-2 border-emerald-500 pl-2"><strong>Uploaded</strong><br />Document is stored with this request.</li>
+                <li className={`border-l-2 pl-2 ${document.status === 'PROCESSING' ? 'border-cyan-500 text-cyan-800' : document.extraction?.status === 'SUCCESS' ? 'border-emerald-500' : document.status === 'FAILED' ? 'border-rose-500 text-rose-800' : 'border-slate-300'}`}><strong>{document.status === 'PROCESSING' ? 'Processing' : 'Extraction'}</strong><br />{document.status === 'PROCESSING' ? 'OCR/extraction is in progress.' : document.extraction?.status === 'SUCCESS' ? `${document.extraction.method || 'Extraction'} completed.` : document.status === 'FAILED' ? 'Extraction failed.' : 'Waiting for extraction result.'}</li>
+                <li className={`border-l-2 pl-2 ${document.status === 'EXTRACTED' ? 'border-emerald-500' : document.status === 'NEEDS_REVIEW' ? 'border-amber-500 text-amber-800' : document.status === 'FAILED' ? 'border-rose-500 text-rose-800' : 'border-slate-300'}`}><strong>{document.status === 'EXTRACTED' ? 'Ready for buyer review' : document.status === 'NEEDS_REVIEW' ? 'Needs review' : document.status === 'FAILED' ? 'Failed' : 'Result pending'}</strong><br />Buyer-only claim verification details are shown to the buyer.</li>
+              </ol>
+              {document.processingError && <p className="text-xs text-rose-800">{document.processingError}</p>}
+              {document.extraction?.errorMessage && <p className="text-xs text-rose-800">{document.extraction.errorMessage}</p>}
+              {document.extraction?.fields?.filter((field) => field.field !== 'DOCUMENT_TEXT' && field.field !== 'PAGE_TEXT').map((field, index) => <p key={`${field.field}-${field.page ?? 'na'}-${index}`} className="text-xs text-slate-700">{fieldLabel(field.field)}: {field.value === null || field.value === undefined ? 'Not available' : String(field.value)}{field.unit ? ` ${field.unit}` : ''}{field.confidence !== undefined ? ` · ${Math.round(field.confidence <= 1 ? field.confidence * 100 : field.confidence)}% confidence` : ''}{field.page ? ` · Page ${field.page}` : ''}{field.sourceText ? ` · Source: “${field.sourceText}”` : ''}</p>)}
+              {document.extraction && !document.extraction.fields?.length && <p className="text-xs text-slate-500">No structured fields are available.</p>}
+              {document.extraction?.text && <details><summary className="cursor-pointer text-xs font-semibold text-slate-700">View extracted text</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border border-slate-200 bg-slate-50 p-2 text-[11px]">{document.extraction.text}</pre></details>}
+              {!document.extraction && document.status !== 'FAILED' && <p className="text-xs text-slate-500">{document.status === 'PROCESSING' ? 'Extraction is processing.' : 'No extraction result is available yet.'}</p>}
+              {document.status === 'FAILED' && <Button size="sm" variant="outline" disabled={retryingDocument === document._id} onClick={() => retryDocument(document._id)}>{retryingDocument === document._id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}{retryingDocument === document._id ? 'Retrying extraction...' : 'Retry extraction'}</Button>}
+            </div>)}
+            {item.response && item.response.evidenceDocuments.length === 0 && <p className="text-xs text-slate-500">No documents uploaded for this response.</p>}
             {!locked && item.responseType !== 'DOCUMENT' && <Button size="sm" variant="outline" disabled={savingItem === item._id} onClick={() => saveItem(item._id)}>{savingItem === item._id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{savingItem === item._id ? 'Saving...' : 'Save draft'}</Button>}
           </div>
         </article>)}
+        {!visibleItems.length && <p className="py-6 text-sm text-slate-500">No requirements are currently applicable to your responses.</p>}
       </div>
     </section>
 

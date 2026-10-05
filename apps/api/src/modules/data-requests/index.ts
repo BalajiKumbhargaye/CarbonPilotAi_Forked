@@ -13,6 +13,7 @@ import {
   QuestionResponseStatus,
   SupplierStatus,
   UserStatus,
+  UserRole,
 } from '@carbonpilot/shared';
 import {
   createDataRequestSchema,
@@ -35,6 +36,9 @@ import {
   QuestionnaireTemplateModel,
   SupplierModel,
   SupplierRelationshipModel,
+  DocumentExtractionModel,
+  VerificationRunModel,
+  UserModel,
 } from '../../models';
 import { isSupportedProcurementFile, privateDocumentStorage } from '../../services/abstractions/IStorageService';
 import { AppError, sendError, sendSuccess } from '../../utils/response';
@@ -52,6 +56,7 @@ const uploadMiddleware: RequestHandler = (req, res, next) => {
       sendError(res, tooLarge ? 413 : 400, error.code, tooLarge ? 'File exceeds the 25 MB limit' : error.message);
       return;
     }
+
     if (error) return next(error);
     return next();
   });
@@ -96,6 +101,17 @@ type RequestRecord = {
 };
 
 export class DataRequestsService {
+  private documentTypeForRequestItem(item: RequestItem, filename: string): DocumentType {
+    const context = `${item.label} ${item.key} ${filename}`.toLowerCase();
+    if (/\bepd\b|environmental product declaration/.test(context)) return DocumentType.EPD;
+    if (/\bpcf\b|product carbon footprint|carbon footprint/.test(context)) return DocumentType.PCF_REPORT;
+    if (/certificate|iso\s*14001|iso\s*50001/.test(context)) return DocumentType.CERTIFICATE;
+    if (/ghg inventory|scope\s*[123]\s+emissions?/.test(context)) return DocumentType.GHG_INVENTORY;
+    if (/energy report/.test(context)) return DocumentType.ENERGY_REPORT;
+    if (/sustainability report/.test(context)) return DocumentType.SUSTAINABILITY_REPORT;
+    return DocumentType.OTHER;
+  }
+
   async getSuppliers(buyerOrganizationId: string) {
     const relationships = await SupplierRelationshipModel.find({
       customerOrganizationId: buyerOrganizationId,
@@ -328,8 +344,9 @@ export class DataRequestsService {
       document = await DocumentModel.create({
         organizationId: user.organizationId,
         supplierId: supplier._id,
+        productId: request.productId,
         uploadedBy: user.userId,
-        type: DocumentType.OTHER,
+        type: this.documentTypeForRequestItem(item, file.originalname),
         filename: file.originalname.replace(/[\\/]/g, '_'),
         fileUrl: `/api/data-requests/${request._id}/documents/${item._id}/file`,
         storageKey: stored.storageKey,
@@ -349,12 +366,246 @@ export class DataRequestsService {
         { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
       );
       await this.markInProgress(request);
-      return { _id: document._id.toString(), filename: document.filename, uploadedAt: document.uploadedAt };
     } catch (error) {
       await privateDocumentStorage.deleteFile(stored.storageKey).catch(() => false);
       if (document) await DocumentModel.deleteOne({ _id: document._id }).catch(() => undefined);
       throw error;
     }
+
+    try {
+      await this.processUploadedDocument(document, request, supplier, user);
+    } catch (error) {
+      logger.error('Data request document pipeline failed', {
+        documentId: document._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      document.status = DocumentStatus.NEEDS_REVIEW;
+      document.processingError = error instanceof Error ? error.message : 'Document processing needs manual review.';
+      await document.save();
+    }
+    return {
+      _id: document._id.toString(),
+      filename: document.filename,
+      uploadedAt: document.uploadedAt,
+      status: document.status,
+      processingError: document.processingError,
+    };
+  }
+
+  async reprocessDocument(documentId: string, user: AuthUserPayload) {
+    if (user.organizationType !== OrganizationType.SUPPLIER) {
+      throw new AppError('Only the submitting supplier can retry document processing', 403, 'FORBIDDEN');
+    }
+    if (!mongoose.isValidObjectId(documentId)) throw new AppError('Document not found', 404, 'NOT_FOUND');
+    const document = await DocumentModel.findOne({
+      _id: documentId,
+      organizationId: user.organizationId,
+      dataRequestId: { $exists: true },
+    });
+    if (!document?.dataRequestId || !document.supplierId) throw new AppError('Document not found', 404, 'NOT_FOUND');
+    const { request, supplier } = await this.findSupplierRequest(document.dataRequestId.toString(), user.organizationId);
+    if (supplier._id.toString() !== document.supplierId.toString()) throw new AppError('Document not found', 404, 'NOT_FOUND');
+    try {
+      await this.processUploadedDocument(document, request, supplier, user);
+    } catch (error) {
+      logger.error('Retried Data Request document pipeline failed', {
+        documentId: document._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      document.status = DocumentStatus.NEEDS_REVIEW;
+      document.processingError = error instanceof Error ? error.message : 'Document processing needs manual review.';
+      await document.save();
+    }
+    return {
+      _id: document._id.toString(),
+      filename: document.filename,
+      status: document.status,
+      processingError: document.processingError,
+    };
+  }
+
+  private async processUploadedDocument(
+    document: any,
+    request: RequestRecord,
+    supplier: any,
+    user: AuthUserPayload,
+    reusedExtraction?: any
+  ) {
+    const { extractionService } = await import('../extraction');
+    const { verificationService } = await import('../verification');
+    let needsReview = false;
+
+    let extraction: any;
+    try {
+      extraction = reusedExtraction || await extractionService.runExtraction(document._id.toString(), user);
+    } catch (error) {
+      logger.warn('Data request document extraction failed', {
+        documentId: document._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const fields = (extraction.fields || []).filter((field: any) =>
+      field.extractionStatus !== 'NEEDS_REVIEW'
+    );
+    const fieldValue = (name: string) => fields.find((field: any) => field.field === name);
+    const productField = fieldValue('PRODUCT_NAME');
+    const productCodeField = fieldValue('PRODUCT_CODE');
+    let productId = request.productId?.toString() || document.productId?.toString();
+    if (!productId && (productField || productCodeField)) {
+      const product = await ProductModel.findOne({
+        supplierId: supplier._id,
+        ...(productCodeField ? { productCode: String(productCodeField.value) } : { name: String(productField.value) }),
+      });
+      productId = product?._id?.toString();
+    }
+
+    const boundary = fieldValue('LIFECYCLE_BOUNDARY');
+    const functionalUnit = fieldValue('FUNCTIONAL_UNIT');
+    const reportingPeriod = fieldValue('REPORTING_PERIOD');
+    const methodology = fieldValue('METHODOLOGY');
+    const claimTypeByField: Record<string, string> = {
+      PCF_VALUE: 'PCF_VALUE',
+      RECYCLED_CONTENT: 'RECYCLED_CONTENT',
+      RENEWABLE_ENERGY_PERCENTAGE: 'RENEWABLE_ELECTRICITY',
+      SCOPE_1: 'GHG_SCOPE_1',
+      SCOPE_2: 'GHG_SCOPE_2',
+      SCOPE_3: 'GHG_SCOPE_3',
+      CERTIFICATE_NUMBER: 'CERTIFICATE',
+    };
+    const extractedClaimFields = fields.filter((field: any) => {
+      if (!claimTypeByField[field.field]) return false;
+      if (field.field === 'CERTIFICATE_NUMBER') return typeof field.value === 'string' && Boolean(field.value.trim());
+      return typeof field.value === 'number'
+        && Number.isFinite(field.value)
+        && (field.field === 'RECYCLED_CONTENT' || field.field === 'RENEWABLE_ENERGY_PERCENTAGE' || Boolean(field.unit));
+    });
+    const seenClaims = new Set<string>();
+    const claims: any[] = [];
+
+    for (const field of extractedClaimFields) {
+      const type = claimTypeByField[field.field];
+      const dedupeKey = `${type}|${field.value}|${field.unit || ''}`;
+      if (seenClaims.has(dedupeKey)) continue;
+      seenClaims.add(dedupeKey);
+
+      const sourceText = field.sourceText || String(field.value);
+      const exactMatch: any = await ClaimModel.findOne({
+        supplierId: supplier._id,
+        dataRequestId: request._id,
+        ...(productId ? { productId } : {}),
+        type,
+        value: field.value,
+        unit: field.unit,
+      });
+      const claim = exactMatch || await ClaimModel.create({
+        supplierId: supplier._id,
+        buyerOrganizationId: request.customerOrganizationId,
+        productId,
+        documentId: document._id,
+        dataRequestId: request._id,
+        type,
+        value: field.value,
+        unit: field.unit,
+        methodology: methodology?.value,
+        reportingPeriod: reportingPeriod?.value,
+        boundary: boundary?.value,
+        claimText: `${type}: ${field.value}${field.unit ? ` ${field.unit}` : ''}`,
+        sourceReference: {
+          documentId: document._id,
+          page: field.page,
+          section: field.field,
+          sourceText,
+          sourceType: 'DOCUMENT_EXTRACTION',
+          extractionMethod: extraction.method,
+        },
+        normalizedData: field.unit && typeof field.value === 'number' ? normalizeCarbonData({
+          value: field.value,
+          unit: field.unit,
+          functionalUnit: functionalUnit?.value,
+          boundary: boundary?.value,
+          reportingPeriod: reportingPeriod?.value,
+        }) : undefined,
+        status: ClaimStatus.PENDING,
+      });
+
+      const existingLink = await ClaimEvidenceLinkModel.findOne({
+        claimId: claim._id,
+        documentId: document._id,
+      });
+      if (!existingLink) {
+        await ClaimEvidenceLinkModel.create({
+          claimId: claim._id,
+          documentId: document._id,
+          page: field.page,
+          section: field.field,
+          sourceText,
+          relationshipType: 'PRIMARY_SOURCE',
+        });
+      }
+      claims.push(claim);
+    }
+
+    if (!claims.length) {
+      needsReview = true;
+      document.status = DocumentStatus.NEEDS_REVIEW;
+      document.processingError = 'Text was extracted, but no supported structured carbon or sustainability claims were identified.';
+      await document.save();
+      return;
+    }
+
+    try {
+      const [membership, buyerUser] = await Promise.all([
+        (await import('../../models/OrganizationMember')).OrganizationMemberModel.findOne({
+          organizationId: request.customerOrganizationId,
+          userId: request.createdBy,
+          status: UserStatus.ACTIVE,
+        }),
+        UserModel.findById(request.createdBy),
+      ]);
+      if (!membership || !buyerUser) {
+        throw new Error('The requesting buyer user is unavailable for verification.');
+      }
+      const buyerActor: AuthUserPayload = {
+        userId: request.createdBy.toString(),
+        organizationId: request.customerOrganizationId.toString(),
+        organizationType: OrganizationType.CUSTOMER,
+        role: membership.role || UserRole.CUSTOMER_ADMIN,
+        email: buyerUser.email,
+      };
+
+      for (const claim of claims) {
+        try {
+          const run = await verificationService.runVerification(claim._id.toString(), buyerActor);
+          if ([ClaimStatus.NEEDS_REVIEW, ClaimStatus.INCONSISTENT, ClaimStatus.UNSUPPORTED].includes(run.overallStatus)) {
+            needsReview = true;
+          }
+        } catch (error) {
+          needsReview = true;
+          logger.error('Automatic document claim verification failed', {
+            documentId: document._id.toString(),
+            claimId: claim._id.toString(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } catch (error) {
+      needsReview = true;
+      logger.error('Automatic document verification could not be initialized', {
+        documentId: document._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (needsReview) {
+      document.status = DocumentStatus.NEEDS_REVIEW;
+      document.processingError = 'Extraction completed, but one or more claims need buyer review. See verification checks for details.';
+    } else {
+      document.status = DocumentStatus.EXTRACTED;
+      document.processingError = undefined;
+    }
+    await document.save();
   }
 
   async reuseExistingDocument(id: string, itemId: string, documentId: string, user: AuthUserPayload) {
@@ -403,7 +654,44 @@ export class DataRequestsService {
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
     );
     await this.markInProgress(request);
-    return { _id: document._id.toString(), filename: document.filename, uploadedAt: document.uploadedAt };
+    const sourceExtractionQuery = DocumentExtractionModel.findOne({ documentId: source._id });
+    const sourceExtraction: any = await sourceExtractionQuery.sort({ processedAt: -1 });
+    let reusedExtraction: any;
+    if (sourceExtraction?.status === 'SUCCESS' && sourceExtraction.text) {
+      reusedExtraction = await DocumentExtractionModel.create({
+        documentId: document._id,
+        sourceDocumentId: source._id,
+        extractionVersion: sourceExtraction.extractionVersion,
+        method: sourceExtraction.method,
+        status: sourceExtraction.status,
+        language: sourceExtraction.language,
+        text: sourceExtraction.text,
+        pages: sourceExtraction.pages,
+        pageCount: sourceExtraction.pageCount,
+        fields: sourceExtraction.fields,
+        processedAt: new Date(),
+      });
+      document.status = DocumentStatus.EXTRACTED;
+      await document.save();
+    }
+    try {
+      await this.processUploadedDocument(document, request, supplier, user, reusedExtraction);
+    } catch (error) {
+      logger.error('Reused Data Request document pipeline failed', {
+        documentId: document._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      document.status = DocumentStatus.NEEDS_REVIEW;
+      document.processingError = error instanceof Error ? error.message : 'Document processing needs manual review.';
+      await document.save();
+    }
+    return {
+      _id: document._id.toString(),
+      filename: document.filename,
+      uploadedAt: document.uploadedAt,
+      status: document.status,
+      processingError: document.processingError,
+    };
   }
 
   async submit(id: string, user: AuthUserPayload) {
@@ -503,7 +791,31 @@ export class DataRequestsService {
         value,
         unit,
       });
-      if (existing) continue;
+      const equivalent = existing || await ClaimModel.findOne({
+        dataRequestId: request._id,
+        supplierId: supplier._id,
+        ...(request.productId ? { productId: request.productId } : {}),
+        type,
+        value: numericValue,
+        unit,
+      });
+      if (equivalent) {
+        for (const document of validDocuments) {
+          const evidence = await ClaimEvidenceLinkModel.findOne({
+            claimId: equivalent._id,
+            documentId: document._id,
+          });
+          if (!evidence) {
+            await ClaimEvidenceLinkModel.create({
+              claimId: equivalent._id,
+              documentId: document._id,
+              sourceText,
+              relationshipType: 'QUESTIONNAIRE_SUPPORT',
+            });
+          }
+        }
+        continue;
+      }
 
       const claim = await ClaimModel.create({
         supplierId: supplier._id,
@@ -859,7 +1171,8 @@ export class DataRequestsService {
         documentIds.push(response.evidenceDocumentId.toString());
       }
       const documents = documentIds.length
-        ? await DocumentModel.find({ _id: { $in: documentIds }, dataRequestId: request._id }).select('filename uploadedAt')
+        ? await DocumentModel.find({ _id: { $in: documentIds }, dataRequestId: request._id })
+          .select('filename uploadedAt status processingError mimeType productId type')
         : [];
       const historical = !response && supplierProfile
         ? historicalByField.get(itemWithKey.key) || historicalByField.get(item.label)
@@ -896,10 +1209,61 @@ export class DataRequestsService {
           unit: response.unit,
           status: response.status,
           submittedAt: response.submittedAt,
-          evidenceDocuments: documents.map((document: any) => ({
-            _id: document._id.toString(),
-            filename: document.filename,
-            downloadPath: `/api/data-requests/${request._id}/documents/${document._id}/file`,
+          evidenceDocuments: await Promise.all(documents.map(async (document: any) => {
+            const [extractionQuery, evidenceLinks] = await Promise.all([
+              DocumentExtractionModel.findOne({ documentId: document._id }).sort({ processedAt: -1 }),
+              ClaimEvidenceLinkModel.find({ documentId: document._id }),
+            ]);
+            const links = evidenceLinks || [];
+            const linkedClaims = viewerType === OrganizationType.SUPPLIER ? [] : await Promise.all(links.map(async (link: any) => {
+              const claim = await ClaimModel.findById(link.claimId);
+              if (!claim || claim.dataRequestId?.toString() !== request._id.toString()) return null;
+              const runs = await VerificationRunModel.find({ claimId: claim._id }).sort({ verifiedAt: -1 });
+              return {
+                _id: claim._id.toString(),
+                type: claim.type,
+                value: claim.value,
+                unit: claim.unit,
+                methodology: claim.methodology,
+                reportingPeriod: claim.reportingPeriod,
+                boundary: claim.boundary,
+                status: claim.status,
+                sourceReference: claim.sourceReference,
+                evidence: {
+                  page: link.page,
+                  section: link.section,
+                  sourceText: link.sourceText,
+                  relationshipType: link.relationshipType,
+                },
+                verification: runs?.[0] || null,
+                eligibleForCarbonCalculation: claim.type === 'PCF_VALUE'
+                  && typeof claim.value === 'number'
+                  && Number.isFinite(claim.value)
+                  && Boolean(claim.unit)
+                  && [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(claim.status),
+              };
+            }));
+            const extraction = extractionQuery || null;
+            return {
+              _id: document._id.toString(),
+              filename: document.filename,
+              documentType: document.type,
+              uploadedAt: document.uploadedAt,
+              downloadPath: `/api/data-requests/${request._id}/documents/${document._id}/file`,
+              status: document.status,
+              processingError: document.processingError,
+              mimeType: document.mimeType,
+              extraction: extraction ? {
+                method: extraction.method,
+                status: extraction.status,
+                text: extraction.text,
+                pages: extraction.pages,
+                fields: extraction.fields,
+                pageCount: extraction.pageCount,
+                errorMessage: extraction.errorMessage,
+              } : null,
+              ...(viewerType === OrganizationType.SUPPLIER ? {} : { claims: linkedClaims.filter(Boolean) }),
+            };
           })),
         } : null,
       };

@@ -26,5 +26,8 @@
     "evidence-verification"
   ],
   "author": "CarbonPilot Team",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
+  }
 }

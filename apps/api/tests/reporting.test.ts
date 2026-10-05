@@ -13,6 +13,7 @@ describe('procurement reporting', () => {
       {
         _id: '1',
         quantity: 100,
+        currency: 'USD',
         supplierId: 'supplier-a',
         productId: 'product-a',
         totalAmount: 1200,
@@ -24,6 +25,7 @@ describe('procurement reporting', () => {
       {
         _id: '2',
         quantity: 50,
+        currency: 'INR',
         supplierId: 'supplier-b',
         productId: 'product-b',
         totalAmount: 500,
@@ -34,6 +36,7 @@ describe('procurement reporting', () => {
       {
         _id: '3',
         quantity: 75,
+        currency: 'INR',
         supplierId: 'supplier-c',
         productId: 'product-c',
         totalAmount: 750,
@@ -45,6 +48,10 @@ describe('procurement reporting', () => {
 
     expect(report.totalPurchases).toBe(3);
     expect(report.totalProcurementQuantity).toBe(225);
+    expect(report.totalProcurementValueByCurrency).toEqual([
+      { currency: 'USD', amount: 1200 },
+      { currency: 'INR', amount: 1250 },
+    ]);
     expect(report.totalExpectedEmissions).toBe(135);
     expect(report.totalActualEmissions).toBe(102);
     expect(report.totalVariance).toBe(-10);

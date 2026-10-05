@@ -96,12 +96,12 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
               <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Expected Carbon</p>
                 <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.expected.emissions != null ? `${tracking.expected.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
-                <p className="mt-1 text-sm text-slate-500">{tracking.expected.quantity ?? '—'} {purchase.unit} × {tracking.expected.carbonIntensity ?? '—'} {tracking.expected.carbonIntensityUnit || 'kgCO2e/kg'}</p>
+                <p className="mt-1 text-sm text-slate-500">{tracking.expected.quantity ?? '—'} {purchase.unit} × {tracking.expected.carbonIntensity ?? '—'} {tracking.expected.carbonIntensityUnit || 'Unit unavailable'}</p>
               </div>
               <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Calculated Actual Carbon</p>
                 <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.actual.emissions != null ? `${tracking.actual.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
-                <p className="mt-1 text-sm text-slate-500">{tracking.actual.quantity ?? '—'} {purchase.unit} × {tracking.actual.carbonIntensity ?? '—'} {tracking.actual.carbonIntensityUnit || 'kgCO2e/kg'}</p>
+                <p className="mt-1 text-sm text-slate-500">{tracking.actual.quantity ?? '—'} {purchase.unit} × {tracking.actual.carbonIntensity ?? '—'} {tracking.actual.carbonIntensityUnit || 'Unit unavailable'}</p>
               </div>
             </div>
             <div className="grid gap-4 md:grid-cols-3">

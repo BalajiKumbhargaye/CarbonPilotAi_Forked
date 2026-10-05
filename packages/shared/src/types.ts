@@ -303,6 +303,13 @@ export interface IDocumentExtraction {
   documentId: string;
   extractionVersion: string;
   fields: IExtractionField[];
+  text?: string;
+  pages?: Array<{
+    pageNumber: number;
+    text: string;
+    method: 'NATIVE_TEXT' | 'OCR';
+    confidence?: number;
+  }>;
   method?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
   status?: 'SUCCESS' | 'FAILED' | 'PARTIAL';
   language?: string;
@@ -338,6 +345,8 @@ export interface IClaim {
     page?: number;
     section?: string;
     sourceText?: string;
+    sourceType?: 'DOCUMENT_EXTRACTION' | 'QUESTIONNAIRE';
+    extractionMethod?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
   };
   normalizedData?: INormalizedCarbonData;
   type: string; // e.g. PCF_VALUE, RECYCLED_CONTENT, ZERO_WASTE
