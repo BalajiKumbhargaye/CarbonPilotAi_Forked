@@ -180,7 +180,7 @@ vi.mock('../src/models/Product', () => ({
 vi.mock('../src/models/Document', () => ({
   DocumentModel: {
     create: vi.fn(async (values: any) => {
-      const document = { ...values, _id: `doc-${++state.nextId}`, uploadedAt: new Date(), save: vi.fn(async () => document) };
+      const document = { ...values, _id: String(++state.nextId).padStart(24, '0'), uploadedAt: new Date(), save: vi.fn(async () => document) };
       state.documents.push(document);
       return document;
     }),
@@ -352,6 +352,51 @@ describe('buyer-to-supplier data requests', () => {
     expect(state.notifications[0]).toMatchObject({ organizationId: ids.supplierOrgA, title: 'New data request' });
   });
 
+  it('creates one request with multiple document requirements and a questionnaire question', async () => {
+    const request = await dataRequestsService.create({
+      supplierId: ids.supplierA,
+      title: 'Sustainability evidence collection',
+      requestedItems: [
+        {
+          key: 'pcf',
+          label: 'Product Carbon Footprint',
+          responseType: 'DOCUMENT',
+          required: true,
+          acceptedDocumentTypes: ['PCF_REPORT'],
+        },
+        {
+          key: 'epd',
+          label: 'Environmental Product Declaration',
+          responseType: 'DOCUMENT',
+          required: true,
+          acceptedDocumentTypes: ['EPD'],
+        },
+        {
+          key: 'renewable_energy',
+          label: 'Renewable electricity share',
+          responseType: 'DECIMAL',
+          required: false,
+          unit: '%',
+        },
+      ],
+    }, buyerA);
+
+    expect(request.requestedItems).toHaveLength(3);
+    expect(request.requestedItems[0]).toMatchObject({
+      label: 'Product Carbon Footprint',
+      acceptedDocumentTypes: ['PCF_REPORT'],
+    });
+    expect(request.requestedItems[1]).toMatchObject({
+      label: 'Environmental Product Declaration',
+      acceptedDocumentTypes: ['EPD'],
+    });
+    expect(request.requestedItems[2]).toMatchObject({
+      label: 'Renewable electricity share',
+      responseType: 'DECIMAL',
+      required: false,
+    });
+  });
+
   it('prevents buyers and suppliers from reading another organization request over HTTP', async () => {
     state.requests.push(makeRequest(baseRequest));
     const buyerResponse = await fetch(`${apiUrl}/api/data-requests/${ids.requestA}`, {
@@ -375,9 +420,51 @@ describe('buyer-to-supplier data requests', () => {
     expect(inProgress.status).toBe('IN_PROGRESS');
     const submitted = await dataRequestsService.submit(ids.requestA, supplierUserA);
     expect(submitted.status).toBe('SUBMITTED');
-    expect(submitted.completion).toMatchObject({ completed: 1, total: 2, missingRequiredItems: [] });
+    expect(submitted.completion).toMatchObject({
+      completed: 1,
+      total: 2,
+      required: { completed: 1, total: 1 },
+      optional: { completed: 0, total: 1 },
+      missingRequiredItems: [],
+    });
     expect(state.responses[0]).toMatchObject({ value: 'Mass balance', status: 'SUBMITTED' });
     expect(state.notifications.at(-1)).toMatchObject({ organizationId: ids.buyerA, title: 'Supplier submitted a data request' });
+  });
+
+  it('returns persisted required and optional progress in the supplier request list', async () => {
+    state.requests.push(makeRequest({
+      ...baseRequest,
+      requestedItems: [
+        { _id: ids.itemDoc, key: 'epd', label: 'EPD', responseType: 'DOCUMENT', required: true },
+        { _id: ids.itemNumber, key: 'renewable', label: 'Renewable certificate', responseType: 'DOCUMENT', required: false },
+      ],
+    }));
+    state.responses.push({
+      _id: 'persisted-document-response',
+      dataRequestId: ids.requestA,
+      supplierId: ids.supplierA,
+      requestedItemId: ids.itemDoc,
+      value: 'Document attached',
+      evidenceDocumentIds: ['doc-persisted'],
+    });
+    state.documents.push({
+      _id: 'doc-persisted',
+      organizationId: ids.supplierOrgA,
+      supplierId: ids.supplierA,
+      dataRequestId: ids.requestA,
+      requestedItemId: ids.itemDoc,
+      filename: 'epd.pdf',
+      type: 'EPD',
+      status: 'EXTRACTED',
+    });
+
+    const [listed] = await dataRequestsService.list(supplierUserA);
+
+    expect(listed.completion).toMatchObject({
+      required: { completed: 1, total: 1 },
+      optional: { completed: 0, total: 1 },
+      missingRequiredItems: [],
+    });
   });
 
   it('identifies questionnaire PCF claims with provenance and linked request evidence', async () => {
@@ -434,7 +521,7 @@ describe('buyer-to-supplier data requests', () => {
 
     state.requests[0].allowPartialSubmission = true;
     const partial = await dataRequestsService.submit(ids.requestA, supplierUserA);
-    expect(partial.status).toBe('SUBMITTED');
+    expect(partial.status).toBe('IN_PROGRESS');
     expect(partial.completion.missingRequiredItems).toEqual([{ _id: ids.itemNumber, label: 'Recycled content' }]);
   });
 
@@ -569,6 +656,82 @@ describe('buyer-to-supplier data requests', () => {
     expect(submitted.status).toBe('SUBMITTED');
     const completed = await dataRequestsService.complete(ids.requestA, buyerA);
     expect(completed.status).toBe('COMPLETED');
+  });
+
+  it('links multiple uploaded documents to their separate requirements in one request', async () => {
+    state.requests.push(makeRequest({
+      ...baseRequest,
+      requestedItems: [
+        { _id: ids.itemDoc, key: 'epd', label: 'EPD', responseType: 'DOCUMENT', required: true, acceptedDocumentTypes: ['EPD'] },
+        { _id: ids.itemNumber, key: 'energy', label: 'Electricity Consumption Report', responseType: 'DOCUMENT', required: true, acceptedDocumentTypes: ['ENERGY_REPORT'] },
+      ],
+    }));
+
+    const epd = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'epd.pdf', mimetype: 'application/pdf', size: 9, buffer: Buffer.from('%PDF-one'),
+    } as Express.Multer.File, supplierUserA);
+    const energy = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemNumber, {
+      originalname: 'energy.pdf', mimetype: 'application/pdf', size: 9, buffer: Buffer.from('%PDF-two'),
+    } as Express.Multer.File, supplierUserA);
+
+    expect(state.documents).toHaveLength(2);
+    expect(state.documents.find((document) => document._id === epd._id)).toMatchObject({
+      requestedItemId: ids.itemDoc,
+      dataRequestId: ids.requestA,
+      type: 'EPD',
+    });
+    expect(state.documents.find((document) => document._id === energy._id)).toMatchObject({
+      requestedItemId: ids.itemNumber,
+      dataRequestId: ids.requestA,
+      type: 'ENERGY_REPORT',
+    });
+  });
+
+  it('supports multiple documents for one requirement and rejects duplicate file content', async () => {
+    state.requests.push(makeRequest({
+      ...baseRequest,
+      requestedItems: [{ _id: ids.itemDoc, label: 'Energy Consumption Evidence', responseType: 'DOCUMENT', required: true }],
+    }));
+    const firstBuffer = Buffer.from('%PDF-energy-march');
+    const first = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'march.pdf', mimetype: 'application/pdf', size: firstBuffer.length, buffer: firstBuffer,
+    } as Express.Multer.File, supplierUserA);
+    const secondBuffer = Buffer.from('%PDF-energy-april');
+    const second = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'april.pdf', mimetype: 'application/pdf', size: secondBuffer.length, buffer: secondBuffer,
+    } as Express.Multer.File, supplierUserA);
+
+    expect(state.documents).toHaveLength(2);
+    expect(state.documents.map((document) => document.requestedItemId)).toEqual([ids.itemDoc, ids.itemDoc]);
+    expect(state.responses[0].evidenceDocumentIds).toEqual([first._id, second._id]);
+    await expect(dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'duplicate.pdf', mimetype: 'application/pdf', size: firstBuffer.length, buffer: firstBuffer,
+    } as Express.Multer.File, supplierUserA)).rejects.toMatchObject({ code: 'DUPLICATE_DOCUMENT' });
+    expect(state.documents).toHaveLength(2);
+  });
+
+  it('replaces a document without deleting historical request evidence', async () => {
+    state.requests.push(makeRequest({
+      ...baseRequest,
+      requestedItems: [{ _id: ids.itemDoc, label: 'ISO Certificate', responseType: 'DOCUMENT', required: true }],
+    }));
+    const previous = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'iso-v1.pdf', mimetype: 'application/pdf', size: 9, buffer: Buffer.from('%PDF-v1'),
+    } as Express.Multer.File, supplierUserA);
+    const replacement = await dataRequestsService.uploadResponseDocument(ids.requestA, ids.itemDoc, {
+      originalname: 'iso-v2.pdf', mimetype: 'application/pdf', size: 9, buffer: Buffer.from('%PDF-v2'),
+    } as Express.Multer.File, supplierUserA, previous._id);
+
+    expect(state.documents).toHaveLength(2);
+    expect(state.documents.find((document) => document._id === previous._id)).toMatchObject({
+      status: 'ARCHIVED',
+      replacedByDocumentId: replacement._id,
+    });
+    expect(state.documents.find((document) => document._id === replacement._id)).toMatchObject({
+      replacesDocumentId: previous._id,
+      requestedItemId: ids.itemDoc,
+    });
+    expect(state.responses[0].evidenceDocumentIds).toEqual([previous._id, replacement._id]);
   });
 
   it('reuses previously uploaded evidence through a new request-scoped document link', async () => {

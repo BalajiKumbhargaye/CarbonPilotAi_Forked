@@ -37,6 +37,7 @@ export interface DataRequestRequirementInput {
   category?: QuestionnaireCategory;
   required: boolean;
   requiresEvidence?: boolean;
+  acceptedDocumentTypes?: string[];
   unit?: string;
   options?: string[];
   conditions?: DataRequestCondition[];
@@ -49,6 +50,9 @@ export interface DataRequestDocumentLink {
   filename: string;
   downloadPath: string;
   documentType?: string;
+  requestedItemId?: string;
+  replacesDocumentId?: string;
+  replacedByDocumentId?: string;
   uploadedAt?: string;
   status?: string;
   processingError?: string;
@@ -135,6 +139,7 @@ export interface DataRequestItem {
   category: QuestionnaireCategory;
   required: boolean;
   requiresEvidence?: boolean;
+  acceptedDocumentTypes?: string[];
   unit?: string;
   options?: string[];
   conditions?: DataRequestCondition[];
@@ -170,6 +175,8 @@ export interface DataRequestRecord {
   completion: {
     completed: number;
     total: number;
+    required: { completed: number; total: number };
+    optional: { completed: number; total: number };
     missingRequiredItems: Array<{ _id: string; label: string }>;
   };
   updatedAt: string;
@@ -266,9 +273,10 @@ export function saveDataRequestItem(id: string, itemId: string, value: string | 
   }, getToken());
 }
 
-export function uploadDataRequestDocument(id: string, itemId: string, file: File) {
+export function uploadDataRequestDocument(id: string, itemId: string, file: File, replacesDocumentId?: string) {
   const form = new FormData();
   form.set('file', file);
+  if (replacesDocumentId) form.set('replacesDocumentId', replacesDocumentId);
   return apiFetch<DataRequestDocumentLink>(`/api/data-requests/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/document`, {
     method: 'POST',
     body: form,

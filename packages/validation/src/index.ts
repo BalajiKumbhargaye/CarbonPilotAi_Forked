@@ -360,6 +360,7 @@ export const createDataRequestSchema = z.object({
     category: z.nativeEnum(QuestionnaireCategory).default(QuestionnaireCategory.GENERAL_SUSTAINABILITY),
     required: z.boolean().default(true),
     requiresEvidence: z.boolean().default(false),
+    acceptedDocumentTypes: z.array(z.nativeEnum(DocumentType)).max(20).optional(),
     unit: z.string().trim().max(40).optional(),
     options: z.array(z.string().trim().min(1).max(160)).max(40).optional(),
     conditions: z.array(z.object({

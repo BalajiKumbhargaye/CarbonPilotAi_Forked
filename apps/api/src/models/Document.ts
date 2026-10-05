@@ -3,6 +3,7 @@ import { IDocument, IProcurementExtractedData, IProcurementReviewData, DocumentT
 
 export interface IDocumentModel extends Omit<IDocument, '_id'>, Document {
   storageKey?: string;
+  requestContentHash?: string;
   reviewData?: IProcurementReviewData;
   extractedData?: IProcurementExtractedData;
 }
@@ -41,6 +42,7 @@ const DocumentSchema = new Schema<IDocumentModel>(
     mimeType: { type: String, required: true },
     fileSize: { type: Number, required: true },
     contentHash: { type: String, select: false },
+    requestContentHash: { type: String, select: false },
     reportingPeriod: { type: String },
     processingError: { type: String },
     reviewData: { type: Schema.Types.Mixed },
@@ -53,6 +55,8 @@ const DocumentSchema = new Schema<IDocumentModel>(
     reviewedAt: { type: Date },
     dataRequestId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'DataRequest', index: true },
     requestedItemId: { type: Schema.Types.ObjectId as unknown as typeof String, index: true },
+    replacesDocumentId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'Document' },
+    replacedByDocumentId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'Document' },
     status: {
       type: String,
       enum: Object.values(DocumentStatus),
@@ -67,6 +71,10 @@ const DocumentSchema = new Schema<IDocumentModel>(
 DocumentSchema.index(
   { organizationId: 1, type: 1, contentHash: 1 },
   { unique: true, partialFilterExpression: { contentHash: { $type: 'string' } } }
+);
+DocumentSchema.index(
+  { organizationId: 1, dataRequestId: 1, requestContentHash: 1 },
+  { unique: true, partialFilterExpression: { dataRequestId: { $type: 'objectId' }, requestContentHash: { $type: 'string' } } }
 );
 
 export const DocumentModel = mongoose.model<IDocumentModel>('Document', DocumentSchema);

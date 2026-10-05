@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction, RequestHandler } from 'express';
+import { createHash } from 'crypto';
 import multer from 'multer';
 import mongoose from 'mongoose';
 import {
@@ -71,6 +72,7 @@ type RequestItem = {
   category: string;
   required: boolean;
   requiresEvidence?: boolean;
+  acceptedDocumentTypes?: DocumentType[];
   unit?: string;
   options?: string[];
   conditions?: Array<{ questionKey: string; operator: 'EQUALS' | 'NOT_EQUALS'; value: string | number | boolean }>;
@@ -101,13 +103,16 @@ type RequestRecord = {
 };
 
 export class DataRequestsService {
-  private documentTypeForRequestItem(item: RequestItem, filename: string): DocumentType {
-    const context = `${item.label} ${item.key} ${filename}`.toLowerCase();
+  private documentTypeForRequestItem(item: RequestItem): DocumentType {
+    if (item.acceptedDocumentTypes?.length === 1) return item.acceptedDocumentTypes[0];
+    const context = `${item.label} ${item.key}`.toLowerCase();
     if (/\bepd\b|environmental product declaration/.test(context)) return DocumentType.EPD;
     if (/\bpcf\b|product carbon footprint|carbon footprint/.test(context)) return DocumentType.PCF_REPORT;
-    if (/certificate|iso\s*14001|iso\s*50001/.test(context)) return DocumentType.CERTIFICATE;
+    if (/iso\s*14001|iso\s*50001/.test(context)) return DocumentType.ISO_CERTIFICATE;
+    if (/certificate/.test(context)) return DocumentType.CERTIFICATE;
     if (/ghg inventory|scope\s*[123]\s+emissions?/.test(context)) return DocumentType.GHG_INVENTORY;
-    if (/energy report/.test(context)) return DocumentType.ENERGY_REPORT;
+    if (/energy bill|electricity bill/.test(context)) return DocumentType.ENERGY_BILL;
+    if (/energy|electricity consumption/.test(context)) return DocumentType.ENERGY_REPORT;
     if (/sustainability report/.test(context)) return DocumentType.SUSTAINABILITY_REPORT;
     return DocumentType.OTHER;
   }
@@ -245,12 +250,12 @@ export class DataRequestsService {
     return this.toResponse(request, true);
   }
 
-  async list(user: AuthUserPayload, incoming = false) {
+  async list(user: AuthUserPayload) {
     const filter = user.organizationType === OrganizationType.CUSTOMER
       ? { customerOrganizationId: user.organizationId }
       : { supplierOrganizationId: user.organizationId, status: { $nin: [DataRequestStatus.DRAFT, DataRequestStatus.CANCELLED] } };
     const requests = await DataRequestModel.find(filter).sort({ updatedAt: -1 });
-    return Promise.all(requests.map((request) => this.toResponse(request as unknown as RequestRecord, !incoming, user.organizationType)));
+    return Promise.all(requests.map((request) => this.toResponse(request as unknown as RequestRecord, true, user.organizationType)));
   }
 
   async summary(user: AuthUserPayload) {
@@ -316,7 +321,13 @@ export class DataRequestsService {
     return response;
   }
 
-  async uploadResponseDocument(id: string, itemId: string, file: Express.Multer.File | undefined, user: AuthUserPayload) {
+  async uploadResponseDocument(
+    id: string,
+    itemId: string,
+    file: Express.Multer.File | undefined,
+    user: AuthUserPayload,
+    replacesDocumentId?: string
+  ) {
     if (!file || !file.size) throw new AppError('Choose a document to upload', 400, 'NO_FILE');
     if (file.size > MAX_FILE_SIZE) throw new AppError('File exceeds the 25 MB limit', 413, 'FILE_TOO_LARGE');
     if (!isSupportedProcurementFile(file)) {
@@ -332,6 +343,28 @@ export class DataRequestsService {
     if (item.responseType !== DataRequestResponseType.DOCUMENT && !item.requiresEvidence) {
       throw new AppError('This question does not request an evidence document', 400, 'EVIDENCE_NOT_REQUESTED');
     }
+    let replacedDocument: any;
+    if (replacesDocumentId) {
+      if (!mongoose.isValidObjectId(replacesDocumentId)) throw new AppError('Document to replace was not found', 404, 'NOT_FOUND');
+      replacedDocument = await DocumentModel.findOne({
+        _id: replacesDocumentId,
+        organizationId: user.organizationId,
+        supplierId: supplier._id,
+        dataRequestId: request._id,
+        requestedItemId: item._id,
+        status: { $ne: DocumentStatus.ARCHIVED },
+      });
+      if (!replacedDocument) throw new AppError('Document to replace was not found', 404, 'NOT_FOUND');
+    }
+
+    const contentHash = createHash('sha256').update(file.buffer).digest('hex');
+    const duplicateQuery = DocumentModel.findOne({
+      organizationId: user.organizationId,
+      dataRequestId: request._id,
+      requestContentHash: contentHash,
+    });
+    const duplicate = await duplicateQuery.select('+requestContentHash');
+    if (duplicate) throw new AppError('This file has already been uploaded to this Data Request', 409, 'DUPLICATE_DOCUMENT');
 
     const stored = await privateDocumentStorage.uploadFile({
       originalname: file.originalname,
@@ -346,16 +379,20 @@ export class DataRequestsService {
         supplierId: supplier._id,
         productId: request.productId,
         uploadedBy: user.userId,
-        type: this.documentTypeForRequestItem(item, file.originalname),
+        type: this.documentTypeForRequestItem(item),
         filename: file.originalname.replace(/[\\/]/g, '_'),
-        fileUrl: `/api/data-requests/${request._id}/documents/${item._id}/file`,
+        fileUrl: 'private://document',
         storageKey: stored.storageKey,
         mimeType: stored.mimeType,
         fileSize: stored.fileSize,
         dataRequestId: request._id,
         requestedItemId: item._id,
+        requestContentHash: contentHash,
+        replacesDocumentId: replacedDocument?._id,
         status: DocumentStatus.UPLOADED,
       });
+      document.fileUrl = `/api/data-requests/${request._id}/documents/${document._id}/file`;
+      await document.save();
       await QuestionResponseModel.findOneAndUpdate(
         { dataRequestId: request._id, supplierId: supplier._id, requestedItemId: item._id },
         {
@@ -366,9 +403,17 @@ export class DataRequestsService {
         { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
       );
       await this.markInProgress(request);
+      if (replacedDocument) {
+        replacedDocument.status = DocumentStatus.ARCHIVED;
+        replacedDocument.replacedByDocumentId = document._id;
+        await replacedDocument.save();
+      }
     } catch (error) {
       await privateDocumentStorage.deleteFile(stored.storageKey).catch(() => false);
       if (document) await DocumentModel.deleteOne({ _id: document._id }).catch(() => undefined);
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 11000) {
+        throw new AppError('This file has already been uploaded to this Data Request', 409, 'DUPLICATE_DOCUMENT');
+      }
       throw error;
     }
 
@@ -439,10 +484,14 @@ export class DataRequestsService {
     try {
       extraction = reusedExtraction || await extractionService.runExtraction(document._id.toString(), user);
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Document extraction failed.';
       logger.warn('Data request document extraction failed', {
         documentId: document._id.toString(),
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
+      document.status = DocumentStatus.FAILED;
+      document.processingError = message;
+      await document.save();
       return;
     }
 
@@ -625,10 +674,12 @@ export class DataRequestsService {
       organizationId: user.organizationId,
       supplierId: supplier._id,
     });
-    const source = await sourceQuery.select('+storageKey');
-    if (!source?.storageKey || !await privateDocumentStorage.readFile(source.storageKey)) {
+    const source = await sourceQuery.select('+storageKey +requestContentHash');
+    const sourceBuffer = source?.storageKey ? await privateDocumentStorage.readFile(source.storageKey) : null;
+    if (!source?.storageKey || !sourceBuffer) {
       throw new AppError('Document not found', 404, 'NOT_FOUND');
     }
+    const contentHash = source.requestContentHash || createHash('sha256').update(sourceBuffer).digest('hex');
 
     const document = await DocumentModel.create({
       organizationId: user.organizationId,
@@ -636,14 +687,17 @@ export class DataRequestsService {
       uploadedBy: user.userId,
       type: source.type,
       filename: source.filename,
-      fileUrl: `/api/data-requests/${request._id}/documents/${item._id}/file`,
+      fileUrl: 'private://document',
       storageKey: source.storageKey,
       mimeType: source.mimeType,
       fileSize: source.fileSize,
+      requestContentHash: contentHash,
       dataRequestId: request._id,
       requestedItemId: item._id,
       status: DocumentStatus.UPLOADED,
     });
+    document.fileUrl = `/api/data-requests/${request._id}/documents/${document._id}/file`;
+    await document.save();
     await QuestionResponseModel.findOneAndUpdate(
       { dataRequestId: request._id, supplierId: supplier._id, requestedItemId: item._id },
       {
@@ -712,15 +766,18 @@ export class DataRequestsService {
     }
 
     const completeItems = activeItems.filter((item) => this.isComplete(item, responseByItem.get(item._id.toString())));
-    request.status = DataRequestStatus.SUBMITTED;
-    request.lastSubmittedAt = new Date();
+    const hasMissingRequired = missingRequired.length > 0;
+    request.status = hasMissingRequired ? DataRequestStatus.IN_PROGRESS : DataRequestStatus.SUBMITTED;
+    request.lastSubmittedAt = hasMissingRequired ? undefined : new Date();
     request.foundFields = completeItems.map((item) => item.label);
     request.missingFields = missingRequired.map((item) => item.label);
     await request.save();
-    await QuestionResponseModel.updateMany(
-      { dataRequestId: request._id, supplierId: supplier._id },
-      { $set: { status: QuestionResponseStatus.SUBMITTED, submittedAt: new Date() } }
-    );
+    if (!hasMissingRequired) {
+      await QuestionResponseModel.updateMany(
+        { dataRequestId: request._id, supplierId: supplier._id },
+        { $set: { status: QuestionResponseStatus.SUBMITTED, submittedAt: new Date() } }
+      );
+    }
     await this.identifyClaimsFromResponses(
       request,
       supplier,
@@ -732,10 +789,12 @@ export class DataRequestsService {
     );
     await this.notifyOrganization(
       request.customerOrganizationId.toString(),
-      'Supplier submitted a data request',
-      `A supplier submitted information for “${request.title}”.`,
+      hasMissingRequired ? 'Supplier saved partial data request progress' : 'Supplier submitted a data request',
+      hasMissingRequired
+        ? `A supplier saved partial information for “${request.title}”. Required items are still missing.`
+        : `A supplier submitted information for “${request.title}”.`,
       `/customer/data-requests/${request._id}`,
-      'SUCCESS'
+      hasMissingRequired ? 'INFO' : 'SUCCESS'
     );
     return this.toResponse(request, true, OrganizationType.SUPPLIER);
   }
@@ -1171,8 +1230,12 @@ export class DataRequestsService {
         documentIds.push(response.evidenceDocumentId.toString());
       }
       const documents = documentIds.length
-        ? await DocumentModel.find({ _id: { $in: documentIds }, dataRequestId: request._id })
-          .select('filename uploadedAt status processingError mimeType productId type')
+        ? await DocumentModel.find({
+          _id: { $in: documentIds },
+          dataRequestId: request._id,
+          requestedItemId: item._id,
+        })
+          .select('filename uploadedAt status processingError mimeType productId type requestedItemId replacesDocumentId replacedByDocumentId')
         : [];
       const historical = !response && supplierProfile
         ? historicalByField.get(itemWithKey.key) || historicalByField.get(item.label)
@@ -1248,6 +1311,9 @@ export class DataRequestsService {
               _id: document._id.toString(),
               filename: document.filename,
               documentType: document.type,
+              requestedItemId: document.requestedItemId?.toString(),
+              replacesDocumentId: document.replacesDocumentId?.toString(),
+              replacedByDocumentId: document.replacedByDocumentId?.toString(),
               uploadedAt: document.uploadedAt,
               downloadPath: `/api/data-requests/${request._id}/documents/${document._id}/file`,
               status: document.status,
@@ -1270,6 +1336,8 @@ export class DataRequestsService {
     }));
     const activeItems = requestedItems.filter((item) => item.visible);
     const completeCount = activeItems.filter((item) => item.completed).length;
+    const requiredItems = activeItems.filter((item) => item.required);
+    const optionalItems = activeItems.filter((item) => !item.required);
     const missingRequiredItems = activeItems.filter((item) => item.required && !item.completed).map((item) => ({ _id: item._id, label: item.label }));
     return {
       ...request.toObject(),
@@ -1277,7 +1345,19 @@ export class DataRequestsService {
       supplierOrganization: supplier ? { _id: supplier._id.toString(), name: supplier.name } : null,
       product: product ? { _id: product._id.toString(), name: product.name, productCode: product.productCode } : null,
       requestedItems,
-      completion: { completed: completeCount, total: activeItems.length, missingRequiredItems },
+      completion: {
+        completed: completeCount,
+        total: activeItems.length,
+        required: {
+          completed: requiredItems.filter((item) => item.completed).length,
+          total: requiredItems.length,
+        },
+        optional: {
+          completed: optionalItems.filter((item) => item.completed).length,
+          total: optionalItems.length,
+        },
+        missingRequiredItems,
+      },
     };
   }
 
@@ -1345,7 +1425,7 @@ export class DataRequestsController {
   }
 
   async list(req: Request, res: Response, next: NextFunction) {
-    try { return sendSuccess(res, await dataRequestsService.list(req.user!, req.path === '/incoming')); }
+    try { return sendSuccess(res, await dataRequestsService.list(req.user!)); }
     catch (error) { return next(error); }
   }
 
@@ -1370,7 +1450,8 @@ export class DataRequestsController {
         req.params.id as string,
         req.params.itemId as string,
         req.file,
-        req.user!
+        req.user!,
+        req.body.replacesDocumentId
       ), 201);
     } catch (error) { return next(error); }
   }

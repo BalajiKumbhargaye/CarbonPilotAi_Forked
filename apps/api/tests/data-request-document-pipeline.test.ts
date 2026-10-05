@@ -422,9 +422,38 @@ describe('real scanned Data Request document pipeline', () => {
     expect(supplierView.requestedItems[0].response.evidenceDocuments[0].extraction?.method).toBe('OCR');
     expect(supplierView.requestedItems[0].response.evidenceDocuments[0]).not.toHaveProperty('claims');
 
-    await dataRequestsService.uploadResponseDocument(requestId, itemId, file, supplier);
+    await expect(dataRequestsService.uploadResponseDocument(requestId, itemId, file, supplier))
+      .rejects.toMatchObject({ code: 'DUPLICATE_DOCUMENT' });
     expect(await ClaimModel.countDocuments({ dataRequestId: requestId, type: 'PCF_VALUE', value: 1.42 })).toBe(1);
     expect(await CarbonCalculationModel.countDocuments({ purchaseId: purchase._id })).toBe(1);
+  }, 30000);
+
+  it('keeps OCR failure isolated when another document is uploaded to the same requirement', async () => {
+    const failedBuffer = createScannedPcf([]);
+    const failed = await dataRequestsService.uploadResponseDocument(requestId, itemId, {
+      originalname: 'blank-scan.pdf',
+      mimetype: 'application/pdf',
+      size: failedBuffer.length,
+      buffer: failedBuffer,
+    } as Express.Multer.File, supplier);
+    const failedExtraction = await DocumentExtractionModel.findOne({ documentId: failed._id });
+
+    const successfulBuffer = createScannedPcf();
+    const successful = await dataRequestsService.uploadResponseDocument(requestId, itemId, {
+      originalname: 'valid-scan.pdf',
+      mimetype: 'application/pdf',
+      size: successfulBuffer.length,
+      buffer: successfulBuffer,
+    } as Express.Multer.File, supplier);
+    const successfulExtraction = await DocumentExtractionModel.findOne({ documentId: successful._id });
+    const links = await ClaimEvidenceLinkModel.find({ documentId: successful._id });
+
+    expect(failed.status).toBe('FAILED');
+    expect(failedExtraction?.status).toBe('FAILED');
+    expect(successful.status).toBe('EXTRACTED');
+    expect(successfulExtraction).toMatchObject({ status: 'SUCCESS', method: 'OCR' });
+    expect(links).toHaveLength(1);
+    expect(await ClaimEvidenceLinkModel.countDocuments({ documentId: failed._id })).toBe(0);
   }, 30000);
 
   it('runs the real scanned invoice OCR through review and imports historical procurement prices with a source link', async () => {

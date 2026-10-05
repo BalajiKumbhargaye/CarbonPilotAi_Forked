@@ -107,26 +107,39 @@ export default function SupplierDataRequestDetailPage() {
     } finally { setSavingItem(''); }
   };
 
-  const uploadEvidence = async (itemId: string, event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const uploadEvidence = async (itemId: string, event: ChangeEvent<HTMLInputElement>, replacesDocumentId?: string) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
     setUploadingItem(itemId);
     setError('');
     setNotice('');
     try {
-      const uploaded = await uploadDataRequestDocument(requestId, itemId, file);
+      const results: Array<{ filename: string; issue?: string }> = [];
+      for (const file of files) {
+        try {
+          const uploaded = await uploadDataRequestDocument(requestId, itemId, file, replacesDocumentId);
+          if (uploaded.status === 'FAILED' || uploaded.status === 'NEEDS_REVIEW') {
+            results.push({ filename: file.name, issue: uploaded.processingError || uploaded.status.replaceAll('_', ' ').toLowerCase() });
+          } else {
+            results.push({ filename: file.name });
+          }
+        } catch (uploadError) {
+          results.push({
+            filename: file.name,
+            issue: uploadError instanceof Error ? uploadError.message : 'Upload failed.',
+          });
+        }
+      }
       await load();
-      if (uploaded.status === 'FAILED') {
-        setError(uploaded.processingError || 'The document was uploaded, but extraction failed.');
-      } else if (uploaded.status === 'NEEDS_REVIEW') {
-        setNotice('The document was uploaded. Processing completed with fields or claims requiring review.');
-      } else if (uploaded.status === 'PROCESSING' || uploaded.status === 'UPLOADED') {
-        setNotice('The document was uploaded and processing is still in progress. Refresh to check for the persisted result.');
+      const issues = results.filter((result) => result.issue);
+      const completed = results.length - issues.length;
+      if (issues.length) {
+        setError(`${completed} of ${results.length} document(s) uploaded; review these results: ${issues.map((result) => `${result.filename}: ${result.issue}`).join('; ')}`);
       } else {
-        setNotice('The document was uploaded and extracted. The buyer can review its claims and verification details.');
+        setNotice(`${results.length} document(s) uploaded and processed independently. The buyer can review claims and verification results.`);
       }
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : 'Unable to upload evidence.');
+      setError(uploadError instanceof Error ? uploadError.message : 'Unable to refresh uploaded documents.');
     } finally {
       setUploadingItem('');
       event.target.value = '';
@@ -192,7 +205,7 @@ export default function SupplierDataRequestDetailPage() {
     <Breadcrumb items={[{ label: 'Data', href: '/supplier/data-requests' }, { label: 'Data Requests', href: '/supplier/data-requests' }, { label: request.title }]} />
     <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between">
       <div><Link href="/supplier/data-requests" className="mb-2 inline-flex items-center gap-1 text-xs font-semibold text-teal-800 hover:underline"><ArrowLeft className="h-3.5 w-3.5" />Incoming requests</Link><h1 className="text-2xl font-bold text-slate-950">{request.title}</h1><p className="mt-1 text-sm text-slate-600">Requested by {request.customerOrganization?.name || 'Buyer'}{request.product?.name ? ` · ${request.product.name}` : ''}{request.deadline ? ` · Due ${new Date(request.deadline).toLocaleDateString()}` : ''}</p></div>
-      <div className="flex flex-wrap items-center gap-3"><Button size="sm" variant="outline" disabled={refreshing} onClick={refresh}>{refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{refreshing ? 'Refreshing...' : 'Refresh results'}</Button><span className={`inline-flex border px-2.5 py-1.5 text-xs font-semibold ${statusClass(request.status)}`}>{request.status.replaceAll('_', ' ')}</span><span className="text-sm tabular-nums text-slate-600">{request.completion.completed}/{request.completion.total}</span></div>
+      <div className="flex flex-wrap items-center gap-3"><Button size="sm" variant="outline" disabled={refreshing} onClick={refresh}>{refreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{refreshing ? 'Refreshing...' : 'Refresh results'}</Button><span className={`inline-flex border px-2.5 py-1.5 text-xs font-semibold ${statusClass(request.status)}`}>{request.status.replaceAll('_', ' ')}</span><span className="text-sm tabular-nums text-slate-600">Required {request.completion.required.completed}/{request.completion.required.total}{request.completion.optional.total ? ` · Optional ${request.completion.optional.completed}/${request.completion.optional.total}` : ''}</span></div>
     </header>
 
     {error && <p role="alert" className="border-l-4 border-rose-600 bg-rose-50 px-4 py-3 text-sm text-rose-900">{error}</p>}
@@ -203,7 +216,7 @@ export default function SupplierDataRequestDetailPage() {
     {request.status === 'SUBMITTED' && <p className="border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">Your submission is with the buyer. Changes are locked until clarification is requested.</p>}
 
     <section aria-labelledby="requirements-title">
-      <div className="mb-3 flex items-end justify-between"><div><h2 id="requirements-title" className="text-base font-semibold text-slate-900">Required information</h2><p className="mt-1 text-xs text-slate-500">Save individual items; you can return and continue later.</p></div><span className="text-xs font-medium text-slate-600">{request.completion.completed} of {request.completion.total} complete</span></div>
+      <div className="mb-3 flex items-end justify-between"><div><h2 id="requirements-title" className="text-base font-semibold text-slate-900">Requirements and questions</h2><p className="mt-1 text-xs text-slate-500">Upload multiple documents per requirement. Each file is stored and processed separately, and you can return to continue later.</p></div><span className="text-xs font-medium text-slate-600">Required {request.completion.required.completed}/{request.completion.required.total}{request.completion.optional.total ? ` · Optional ${request.completion.optional.completed}/${request.completion.optional.total}` : ''}</span></div>
       <div className="divide-y divide-slate-200 border-y border-slate-200">
         {visibleItems.map((item) => <article key={item._id} className="grid gap-4 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(280px,1fr)]">
           <div><div className="flex items-start gap-2"><span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border ${item.completed ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-slate-300 text-transparent'}`}><Check className="h-3.5 w-3.5" /></span><div><h3 className="text-sm font-semibold text-slate-900">{item.label}<span className="ml-2 text-xs font-normal text-slate-500">{item.required ? 'Required' : 'Optional'}</span></h3>{item.description && <p className="mt-1 text-sm text-slate-600">{item.description}</p>}<p className="mt-1 text-xs text-slate-500">{item.responseType.replace('_', ' ')}{item.requiresEvidence || item.responseType === 'DOCUMENT' ? ' + evidence' : ''}{item.unit ? ` · ${item.unit}` : ''}</p></div></div>
@@ -219,11 +232,12 @@ export default function SupplierDataRequestDetailPage() {
             {item.responseType === 'BOOLEAN' && <select disabled={locked} value={values[item._id] || ''} onChange={(event) => setValues((current) => ({ ...current, [item._id]: event.target.value }))} className="response-input"><option value="">Choose yes or no</option><option value="true">Yes</option><option value="false">No</option></select>}
             {item.responseType === 'SINGLE_SELECT' && <select disabled={locked} value={values[item._id] || ''} onChange={(event) => setValues((current) => ({ ...current, [item._id]: event.target.value }))} className="response-input"><option value="">Choose an option</option>{item.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select>}
             {item.responseType === 'MULTI_SELECT' && <select multiple disabled={locked} value={(values[item._id] || '').split('\u001f').filter(Boolean)} onChange={(event) => setValues((current) => ({ ...current, [item._id]: Array.from(event.target.selectedOptions).map((option) => option.value).join('\u001f') }))} className="response-input h-24 py-2">{item.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select>}
-            {item.responseType === 'DOCUMENT' && <p className="text-xs text-slate-600">Attach a PDF, PNG, JPG, or JPEG file up to 25 MB.</p>}
-            {(item.responseType === 'DOCUMENT' || item.requiresEvidence) && !locked && <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-teal-800 hover:underline"><UploadCloud className="h-4 w-4" />{uploadingItem === item._id ? 'Uploading...' : 'Upload evidence'}<input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event)} className="sr-only" /></label>}
-            {item.response?.evidenceDocuments.map((document) => <div key={document._id} className="space-y-2 border border-slate-200 bg-white p-3">
+            {item.responseType === 'DOCUMENT' && <p className="text-xs text-slate-600">Attach one or more PDF, PNG, JPG, or JPEG files (up to 25 MB each).{item.acceptedDocumentTypes?.length ? ` Accepted types: ${item.acceptedDocumentTypes.join(', ')}.` : ''}</p>}
+            {(item.responseType === 'DOCUMENT' || item.requiresEvidence) && !locked && <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-teal-800 hover:underline"><UploadCloud className="h-4 w-4" />{uploadingItem === item._id ? 'Uploading documents...' : 'Upload evidence'}<input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event)} className="sr-only" /></label>}
+            {item.response?.evidenceDocuments.map((document) => <div key={document._id} className={`space-y-2 border border-slate-200 bg-white p-3 ${document.status === 'ARCHIVED' ? 'opacity-70' : ''}`}>
               <button type="button" onClick={async () => { try { const blob = await downloadDataRequestDocument(document, requestId); const url = URL.createObjectURL(blob); const anchor = window.document.createElement('a'); anchor.href = url; anchor.download = document.filename; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (downloadError) { setError(downloadError instanceof Error ? downloadError.message : 'Unable to download evidence.'); } }} className="flex items-center gap-2 text-xs font-medium text-slate-700 hover:text-teal-800"><FileText className="h-4 w-4" />{document.filename}<Download className="h-3.5 w-3.5" /></button>
-              <p className="text-xs text-slate-600">{document.documentType || 'Document type unavailable'}{document.uploadedAt ? ` · Uploaded ${new Date(document.uploadedAt).toLocaleString()}` : ''}</p>
+              <p className="text-xs text-slate-600">{document.documentType || 'Document type unavailable'}{document.documentType === 'OTHER' && ' · Document type could not be confidently matched.'}{document.status === 'ARCHIVED' && ' · Replaced; historical record retained.'}{document.uploadedAt ? ` · Uploaded ${new Date(document.uploadedAt).toLocaleString()}` : ''}</p>
+              {!locked && document.status !== 'ARCHIVED' && <label className="flex cursor-pointer items-center gap-1 text-xs font-semibold text-amber-800 hover:underline"><RefreshCw className="h-3.5 w-3.5" />Replace and retain history<input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event, document._id)} className="sr-only" /></label>}
               <ol aria-label="Document processing lifecycle" className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
                 <li className="border-l-2 border-emerald-500 pl-2"><strong>Uploaded</strong><br />Document is stored with this request.</li>
                 <li className={`border-l-2 pl-2 ${document.status === 'PROCESSING' ? 'border-cyan-500 text-cyan-800' : document.extraction?.status === 'SUCCESS' ? 'border-emerald-500' : document.status === 'FAILED' ? 'border-rose-500 text-rose-800' : 'border-slate-300'}`}><strong>{document.status === 'PROCESSING' ? 'Processing' : 'Extraction'}</strong><br />{document.status === 'PROCESSING' ? 'OCR/extraction is in progress.' : document.extraction?.status === 'SUCCESS' ? `${document.extraction.method || 'Extraction'} completed.` : document.status === 'FAILED' ? 'Extraction failed.' : 'Waiting for extraction result.'}</li>

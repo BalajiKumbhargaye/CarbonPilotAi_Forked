@@ -273,6 +273,8 @@ export interface IDocument {
   reviewedAt?: string | Date;
   uploadedAt: string | Date;
   updatedAt: string | Date;
+  replacesDocumentId?: string;
+  replacedByDocumentId?: string;
 }
 
 export interface IProcurementReviewData {
@@ -509,6 +511,13 @@ export interface IDataRequest {
   clarificationMessage?: string;
   clarificationItemIds?: string[];
   lastSubmittedAt?: string | Date;
+  completion?: {
+    completed: number;
+    total: number;
+    required: { completed: number; total: number };
+    optional: { completed: number; total: number };
+    missingRequiredItems: Array<{ _id: string; label: string }>;
+  };
   createdAt: string | Date;
   updatedAt: string | Date;
 }
@@ -522,6 +531,7 @@ export interface IDataRequestItem {
   category: QuestionnaireCategory;
   required: boolean;
   requiresEvidence?: boolean;
+  acceptedDocumentTypes?: DocumentType[];
   unit?: string;
   options?: string[];
   conditions?: IDataRequestCondition[];

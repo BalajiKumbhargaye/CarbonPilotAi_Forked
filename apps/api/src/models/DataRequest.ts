@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { IDataRequest, DataRequestResponseType, DataRequestStatus, QuestionnaireCategory } from '@carbonpilot/shared';
+import { IDataRequest, DataRequestResponseType, DataRequestStatus, DocumentType, QuestionnaireCategory } from '@carbonpilot/shared';
 
 export interface IDataRequestDocument extends Omit<IDataRequest, '_id'>, Document {}
 
@@ -12,6 +12,7 @@ const RequestedItemSchema = new Schema(
     category: { type: String, enum: Object.values(QuestionnaireCategory), default: QuestionnaireCategory.GENERAL_SUSTAINABILITY },
     required: { type: Boolean, default: true },
     requiresEvidence: { type: Boolean, default: false },
+    acceptedDocumentTypes: [{ type: String, enum: Object.values(DocumentType) }],
     unit: { type: String, trim: true, maxlength: 40 },
     options: [{ type: String, trim: true, maxlength: 160 }],
     conditions: [{
