@@ -7,7 +7,7 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { requireOrganizationType } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createClaimSchema } from '@carbonpilot/validation';
-import { assertOwnSupplier, getAccessibleClaim, getAccessibleSupplierIds } from '../verification/access';
+import { assertOwnSupplier, getAccessibleClaim, getAccessibleClaimFilter } from '../verification/access';
 import { ProductModel } from '../../models/Product';
 import { FacilityModel } from '../../models/Facility';
 import { DataRequestModel } from '../../models/DataRequest';
@@ -16,8 +16,7 @@ import { updateClaimSchema } from '@carbonpilot/validation';
 
 export class ClaimService {
   async getAll(user: NonNullable<Request['user']>) {
-    const supplierIds = await getAccessibleSupplierIds(user);
-    const filter = { supplierId: { $in: supplierIds } };
+    const filter = await getAccessibleClaimFilter(user);
     return ClaimModel.find(filter)
       .populate('productId', 'name productCode')
       .populate('facilityId', 'name location');

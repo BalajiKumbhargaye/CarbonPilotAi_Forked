@@ -12,8 +12,8 @@ async function bootstrap() {
   const server = app.listen(ENV.PORT, () => {
     logger.info(`🚀 CarbonPilot API running at http://localhost:${ENV.PORT}/api`);
     logger.info(`📋 Healthcheck: http://localhost:${ENV.PORT}/api/health`);
-    logger.info(`🌱 Storage Provider: ${ENV.STORAGE_PROVIDER}`);
-    logger.info(`🤖 AI Provider: ${ENV.AI_PROVIDER}`);
+    logger.info('Private document storage: local filesystem');
+    logger.info('Questionnaire assistance: deterministic mock provider');
   });
 
   // Graceful shutdown handling

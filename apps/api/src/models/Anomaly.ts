@@ -11,6 +11,7 @@ const AnomalySchema = new Schema<IAnomalyDocument>(
       required: true,
       index: true,
     },
+    buyerOrganizationId: { type: Schema.Types.ObjectId, ref: 'Organization', index: true },
     type: {
       type: String,
       enum: Object.values(AnomalyType),

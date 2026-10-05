@@ -5,6 +5,7 @@ import { apiRouter } from './routes';
 import { errorHandler } from './middleware/error.middleware';
 import { logger } from './utils/logger';
 import { sendError } from './utils/response';
+import { ENV } from './config/env';
 
 export function createApp(): Express {
   const app = express();
@@ -13,8 +14,7 @@ export function createApp(): Express {
   app.use(helmet({ crossOriginResourcePolicy: false }));
   app.use(
     cors({
-      origin: '*', // Allow frontend development requests
-      credentials: true,
+      origin: ENV.APP_URL,
     })
   );
   app.use(express.json({ limit: '10mb' }));

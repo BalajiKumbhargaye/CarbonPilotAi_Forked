@@ -4,8 +4,10 @@ import { DocumentModel, IDocumentModel } from '../../models/Document';
 import { AppError, sendSuccess, sendError } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
 import { isSupportedProcurementFile, LocalStorageService, privateDocumentStorage } from '../../services/abstractions/IStorageService';
-import { DocumentType, DocumentStatus, DocumentClassificationSource, OrganizationType } from '@carbonpilot/shared';
+import { DocumentType, DocumentStatus, DocumentClassificationSource, OrganizationType, SupplierStatus } from '@carbonpilot/shared';
 import { SupplierModel } from '../../models/Supplier';
+import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
+import { DataRequestModel } from '../../models/DataRequest';
 import {
   assertSupplierDocumentAccess,
   getAccessibleDocument,
@@ -22,13 +24,64 @@ const legacyStorage = new LocalStorageService();
 
 export class DocumentService {
   async getDocuments(user: NonNullable<Request['user']>, supplierId?: string) {
-    const accessibleSupplierIds = await getAccessibleDocumentSupplierIds(user);
-    const filter: Record<string, unknown> = {
-      $or: [
+    let filter: Record<string, unknown>;
+    if (user.organizationType === OrganizationType.SUPPLIER) {
+      const accessibleSupplierIds = await getAccessibleDocumentSupplierIds(user);
+      filter = {
+        $or: [
+          { organizationId: user.organizationId },
+          { supplierId: { $in: accessibleSupplierIds } },
+        ],
+      };
+    } else {
+      const [relationships, requests] = await Promise.all([
+        SupplierRelationshipModel.find({
+          customerOrganizationId: user.organizationId,
+          status: SupplierStatus.ACTIVE,
+          'sharedDataPermissions.documents': true,
+        }),
+        DataRequestModel.find({ customerOrganizationId: user.organizationId }),
+      ]);
+      const sharedSupplierOrganizationIds = relationships.map((relationship) =>
+        relationship.supplierOrganizationId.toString()
+      );
+      const requestedSupplierOrganizationIds = requests.map((request) =>
+        request.supplierOrganizationId.toString()
+      );
+      const supplierOrganizationIds = [...new Set([
+        ...sharedSupplierOrganizationIds,
+        ...requestedSupplierOrganizationIds,
+      ])];
+      const suppliers = supplierOrganizationIds.length
+        ? await SupplierModel.find({ organizationId: { $in: supplierOrganizationIds } })
+        : [];
+      const supplierIdsByOrganization = new Map(
+        suppliers.map((supplier) => [supplier.organizationId.toString(), supplier._id.toString()])
+      );
+      const sharedSupplierIds = sharedSupplierOrganizationIds
+        .map((organizationId) => supplierIdsByOrganization.get(organizationId))
+        .filter((id): id is string => !!id);
+      const requestedSupplierIds = requestedSupplierOrganizationIds
+        .map((organizationId) => supplierIdsByOrganization.get(organizationId))
+        .filter((id): id is string => !!id);
+      const requestIds = requests.map((request) => request._id);
+      const visibleDocuments: Record<string, unknown>[] = [
         { organizationId: user.organizationId },
-        { supplierId: { $in: accessibleSupplierIds } },
-      ],
-    };
+      ];
+      if (sharedSupplierIds.length) {
+        visibleDocuments.push({
+          supplierId: { $in: sharedSupplierIds },
+          $or: [{ dataRequestId: { $exists: false } }, { dataRequestId: null }],
+        });
+      }
+      if (requestIds.length && requestedSupplierIds.length) {
+        visibleDocuments.push({
+          supplierId: { $in: requestedSupplierIds },
+          dataRequestId: { $in: requestIds },
+        });
+      }
+      filter = { $or: visibleDocuments };
+    }
     if (supplierId) filter.supplierId = supplierId;
     return DocumentModel.find(filter).sort({ uploadedAt: -1 });
   }

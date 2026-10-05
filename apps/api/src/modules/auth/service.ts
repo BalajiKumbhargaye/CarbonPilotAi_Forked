@@ -6,7 +6,7 @@ import { OrganizationMemberModel } from '../../models/OrganizationMember';
 import { SupplierModel } from '../../models/Supplier';
 import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
 import { AppError } from '../../utils/response';
-import { ENV } from '../../config/env';
+import { ENV, resolveJwtExpirySeconds } from '../../config/env';
 import { RegisterInput, LoginInput } from '@carbonpilot/validation';
 import { UserRole, OrganizationType, UserStatus, OrganizationStatus, SupplierStatus } from '@carbonpilot/shared';
 
@@ -197,7 +197,7 @@ export class AuthService {
     email: string;
   }): string {
     return jwt.sign(payload, ENV.JWT_SECRET, {
-      expiresIn: '7d',
+      expiresIn: resolveJwtExpirySeconds(ENV.JWT_EXPIRES_IN),
     });
   }
 }

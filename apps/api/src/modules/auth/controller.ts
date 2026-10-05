@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { authService } from './service';
-import { sendSuccess } from '../../utils/response';
+import { sendError, sendSuccess } from '../../utils/response';
 
 export class AuthController {
   async register(req: Request, res: Response, next: NextFunction) {
@@ -33,26 +33,12 @@ export class AuthController {
     }
   }
 
-  async forgotPassword(req: Request, res: Response, next: NextFunction) {
-    try {
-      // Placeholder response foundation
-      return sendSuccess(res, {
-        message: 'Password reset instructions have been dispatched if the account exists.',
-      });
-    } catch (error) {
-      next(error);
-    }
+  async forgotPassword(_req: Request, res: Response, _next: NextFunction) {
+    return sendError(res, 501, 'PASSWORD_RESET_UNAVAILABLE', 'Password reset is not available in this demo.');
   }
 
-  async resetPassword(req: Request, res: Response, next: NextFunction) {
-    try {
-      // Placeholder response foundation
-      return sendSuccess(res, {
-        message: 'Password has been successfully updated.',
-      });
-    } catch (error) {
-      next(error);
-    }
+  async resetPassword(_req: Request, res: Response, _next: NextFunction) {
+    return sendError(res, 501, 'PASSWORD_RESET_UNAVAILABLE', 'Password reset is not available in this demo.');
   }
 }
 

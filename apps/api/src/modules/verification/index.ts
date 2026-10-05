@@ -28,7 +28,13 @@ import {
   IEvidenceCheck,
   IExtractionField,
 } from '@carbonpilot/shared';
-import { getAccessibleClaim, getAccessibleDocument, getAccessibleSupplierIds } from './access';
+import {
+  getAccessibleClaim,
+  getAccessibleClaimFilter,
+  getAccessibleDocument,
+  getAccessibleAnomaly,
+  getAccessibleAnomalyFilter,
+} from './access';
 import {
   areComparablePcfValues,
   certificateDateIssue,
@@ -716,8 +722,8 @@ export class VerificationService {
   }
 
   async getClaims(user: NonNullable<Request['user']>) {
-    const supplierIds = await getAccessibleSupplierIds(user);
-    return ClaimModel.find({ supplierId: { $in: supplierIds } }).sort({ updatedAt: -1 });
+    const filter = await getAccessibleClaimFilter(user);
+    return ClaimModel.find(filter).sort({ updatedAt: -1 });
   }
 
   async getRun(runId: string, user: NonNullable<Request['user']>) {
@@ -728,18 +734,15 @@ export class VerificationService {
   }
 
   async getIssues(user: NonNullable<Request['user']>) {
-    const supplierIds = await getAccessibleSupplierIds(user);
-    return AnomalyModel.find({ supplierId: { $in: supplierIds } }).sort({ detectedAt: -1 });
+    const filter = await getAccessibleAnomalyFilter(user);
+    return AnomalyModel.find(filter).sort({ detectedAt: -1 });
   }
 
   async reviewIssue(issueId: string, note: string | undefined, user: NonNullable<Request['user']>) {
     if (user.organizationType !== OrganizationType.CUSTOMER) {
       throw new AppError('Only a buyer can review verification issues', 403, 'FORBIDDEN');
     }
-    const issue = await AnomalyModel.findById(issueId);
-    if (!issue) throw new AppError('Issue not found', 404, 'NOT_FOUND');
-    const supplierIds = await getAccessibleSupplierIds(user);
-    if (!supplierIds.includes(issue.supplierId.toString())) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    const issue = await getAccessibleAnomaly(issueId, user);
     issue.status = AnomalyStatus.UNDER_REVIEW;
     issue.reviewedBy = user.userId;
     issue.reviewedAt = new Date();

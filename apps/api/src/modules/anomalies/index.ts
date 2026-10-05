@@ -7,12 +7,16 @@ import { createAnomalySchema, resolveAnomalySchema } from '@carbonpilot/validati
 import { AnomalyStatus, OrganizationType } from '@carbonpilot/shared';
 import { AuthUserPayload } from '../../middleware/auth.middleware';
 import { AppError } from '../../utils/response';
-import { getAccessibleSupplierIds } from '../verification/access';
+import {
+  getAccessibleAnomaly,
+  getAccessibleAnomalyFilter,
+  getAccessibleDocument,
+  getAccessibleSupplierIds,
+} from '../verification/access';
 
 export class AnomalyService {
   async getAll(user: AuthUserPayload, status?: string) {
-    const supplierIds = await getAccessibleSupplierIds(user);
-    const filter: Record<string, unknown> = { supplierId: { $in: supplierIds } };
+    const filter: Record<string, unknown> = await getAccessibleAnomalyFilter(user);
     if (status) filter.status = status;
     return AnomalyModel.find(filter)
       .populate('supplierId')
@@ -21,13 +25,8 @@ export class AnomalyService {
   }
 
   async getById(id: string, user: AuthUserPayload) {
-    const anomaly = await AnomalyModel.findById(id).populate('documents');
-    if (!anomaly) throw new AppError('Issue not found', 404, 'NOT_FOUND');
-    const supplierIds = await getAccessibleSupplierIds(user);
-    if (!supplierIds.includes(anomaly.supplierId.toString())) {
-      throw new AppError('Issue not found', 404, 'NOT_FOUND');
-    }
-    return anomaly;
+    const anomaly = await getAccessibleAnomaly(id, user);
+    return AnomalyModel.findById(anomaly._id).populate('documents');
   }
 
   async create(data: Record<string, any>, user: AuthUserPayload) {
@@ -36,17 +35,20 @@ export class AnomalyService {
     }
     const supplierIds = await getAccessibleSupplierIds(user);
     if (!supplierIds.includes(String(data.supplierId))) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
-    return AnomalyModel.create(data);
+    for (const documentId of data.documents ?? []) {
+      const document = await getAccessibleDocument(documentId, user);
+      if (document.supplierId?.toString() !== String(data.supplierId)) {
+        throw new AppError('Document not found', 404, 'NOT_FOUND');
+      }
+    }
+    return AnomalyModel.create({ ...data, buyerOrganizationId: user.organizationId });
   }
 
   async resolve(id: string, note: string, status: AnomalyStatus.RESOLVED | AnomalyStatus.IGNORED, user: AuthUserPayload) {
     if (user.organizationType !== OrganizationType.CUSTOMER) {
       throw new AppError('Only a buyer can resolve or dismiss an issue', 403, 'FORBIDDEN');
     }
-    const anomaly = await AnomalyModel.findById(id);
-    if (!anomaly) throw new AppError('Issue not found', 404, 'NOT_FOUND');
-    const supplierIds = await getAccessibleSupplierIds(user);
-    if (!supplierIds.includes(anomaly.supplierId.toString())) throw new AppError('Issue not found', 404, 'NOT_FOUND');
+    const anomaly = await getAccessibleAnomaly(id, user);
     return AnomalyModel.findByIdAndUpdate(id,
       {
         status,

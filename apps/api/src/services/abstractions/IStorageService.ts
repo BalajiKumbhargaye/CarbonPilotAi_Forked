@@ -20,10 +20,7 @@ export interface IStorageService {
   deleteFile(storageKey: string): Promise<boolean>;
 }
 
-/**
- * Local Disk Storage Implementation (Default for development)
- * Easily swappable with S3StorageService or CloudinaryStorageService
- */
+/** Local filesystem storage is the only configured document-storage backend. */
 export class LocalStorageService implements IStorageService {
   private baseDir: string;
   private baseUrl: string;

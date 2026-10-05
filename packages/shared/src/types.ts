@@ -475,6 +475,7 @@ export interface ICorroborationResult {
 export interface IAnomaly {
   _id: string;
   supplierId: string;
+  buyerOrganizationId?: string;
   type: AnomalyType;
   severity: AnomalySeverity;
   status: AnomalyStatus;

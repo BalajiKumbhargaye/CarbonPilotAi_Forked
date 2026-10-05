@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { NotificationModel } from '../../models/Notification';
-import { sendSuccess } from '../../utils/response';
+import { AppError, sendSuccess } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
 
 export class NotificationService {
@@ -8,8 +9,15 @@ export class NotificationService {
     return NotificationModel.find({ userId }).sort({ createdAt: -1 });
   }
 
-  async markAsRead(id: string) {
-    return NotificationModel.findByIdAndUpdate(id, { read: true }, { new: true });
+  async markAsRead(id: string, userId: string) {
+    if (!mongoose.isValidObjectId(id)) throw new AppError('Notification not found', 404, 'NOT_FOUND');
+    const notification = await NotificationModel.findOneAndUpdate(
+      { _id: id, userId },
+      { read: true },
+      { new: true }
+    );
+    if (!notification) throw new AppError('Notification not found', 404, 'NOT_FOUND');
+    return notification;
   }
 
   async markAllAsRead(userId: string) {
@@ -31,7 +39,7 @@ export class NotificationController {
 
   async markAsRead(req: Request, res: Response, next: NextFunction) {
     try {
-      const updated = await notificationService.markAsRead(req.params.id as string);
+      const updated = await notificationService.markAsRead(req.params.id as string, req.user!.userId);
       return sendSuccess(res, updated);
     } catch (error) {
       next(error);

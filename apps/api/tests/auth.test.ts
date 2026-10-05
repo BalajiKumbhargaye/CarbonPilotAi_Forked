@@ -3,7 +3,7 @@ import { Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { createApp } from '../src/app';
-import { ENV } from '../src/config/env';
+import { ENV, resolveJwtExpirySeconds, resolveJwtSecret } from '../src/config/env';
 import { procurementService } from '../src/modules/procurement';
 import { facilityService } from '../src/modules/facilities';
 import { logout } from '../../web/src/lib/auth';
@@ -167,6 +167,28 @@ async function registerAndLogin(payload: typeof buyerRegistration | typeof suppl
 }
 
 describe('authentication and role authorization', () => {
+  it('requires a unique long JWT secret in production', () => {
+    expect(() => resolveJwtSecret('production')).toThrow(/JWT_SECRET/);
+    expect(() => resolveJwtSecret('production', 'too-short')).toThrow(/JWT_SECRET/);
+    expect(() => resolveJwtSecret('production', 'a-secure-production-secret-at-least-32-characters')).not.toThrow();
+    expect(resolveJwtSecret('development')).toBeTruthy();
+  });
+
+  it('uses a validated configured JWT expiry duration', () => {
+    expect(resolveJwtExpirySeconds('7d')).toBe(604800);
+    expect(resolveJwtExpirySeconds('15m')).toBe(900);
+    expect(() => resolveJwtExpirySeconds('forever')).toThrow(/JWT_EXPIRES_IN/);
+  });
+
+  it('allows CORS only from the configured application origin', async () => {
+    const allowedOrigin = await request('/api/health', { headers: { Origin: ENV.APP_URL } });
+    const rejectedOrigin = await request('/api/health', { headers: { Origin: 'https://untrusted.example' } });
+
+    expect(allowedOrigin.headers.get('access-control-allow-origin')).toBe(ENV.APP_URL);
+    expect(rejectedOrigin.headers.get('access-control-allow-origin')).toBe(ENV.APP_URL);
+    expect(allowedOrigin.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
   it('registers a buyer with a hashed password and owner membership', async () => {
     const response = await request('/api/auth/register', {
       method: 'POST',
@@ -313,5 +335,23 @@ describe('authentication and role authorization', () => {
 
     expect(invalidResponse.status).toBe(401);
     expect(expiredResponse.status).toBe(401);
+  });
+
+  it('does not report success for unavailable password reset operations', async () => {
+    const forgot = await request('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'buyer@example.com' }),
+    });
+    const reset = await request('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token: 'unused-token', newPassword: 'new-password-123' }),
+    });
+    const forgotBody = await forgot.json();
+    const resetBody = await reset.json();
+
+    expect(forgot.status).toBe(501);
+    expect(forgotBody.error.code).toBe('PASSWORD_RESET_UNAVAILABLE');
+    expect(reset.status).toBe(501);
+    expect(resetBody.error.code).toBe('PASSWORD_RESET_UNAVAILABLE');
   });
 });
