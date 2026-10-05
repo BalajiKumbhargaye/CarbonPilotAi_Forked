@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction, RequestHandler } from 'express
 import multer from 'multer';
 import mongoose from 'mongoose';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import {
   DocumentStatus,
   DocumentType,
@@ -9,8 +10,13 @@ import {
   OrganizationType,
   ProductStatus,
   PurchaseStatus,
+  PRODUCT_UNITS,
   SupplierStatus,
   IProcurementReviewData,
+  IProcurementExtractedData,
+  IProcurementExtractedLineItem,
+  IProcurementReviewLineItem,
+  IExtractionField,
 } from '@carbonpilot/shared';
 import { procurementDocumentReviewSchema } from '@carbonpilot/validation';
 import { authenticate } from '../../middleware/auth.middleware';
@@ -23,13 +29,16 @@ import { PurchaseModel } from '../../models/Purchase';
 import { PurchaseOrderModel } from '../../models/PurchaseOrder';
 import { SupplierModel } from '../../models/Supplier';
 import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
+import { DocumentExtractionModel, IDocumentExtractionDocument } from '../../models/DocumentExtraction';
 import { isSupportedProcurementFile, privateDocumentStorage } from '../../services/abstractions/IStorageService';
+import { extractDocumentTextFromBuffer } from '../../services/ocr/document-extractor';
 import { purchasesService } from '../procurement/purchases.service';
 import { AppError, sendError, sendSuccess } from '../../utils/response';
+import { logger } from '../../utils/logger';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
-const EXTRACTION_UNAVAILABLE_REASON = 'Document extraction service unavailable';
 const privateStorage = privateDocumentStorage;
+const EXTRACTION_VERSION = '1.0';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -53,6 +62,157 @@ const uploadMiddleware: RequestHandler = (req, res, next) => {
 
 type UploadFile = Express.Multer.File;
 type ProcurementDocumentType = DocumentType.INVOICE | DocumentType.PURCHASE_ORDER;
+type ProcurementMatchStatus = IProcurementExtractedData['supplierMatchStatus'];
+
+interface ParsedProcurementField {
+  field: string;
+  value: string;
+  sourceText: string;
+}
+
+function normalizeMatchText(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+}
+
+function parseProcurementText(text: string, type: ProcurementDocumentType) {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const findOne = (pattern: RegExp) => {
+    const match = text.match(pattern);
+    return match?.[1]?.trim() || undefined;
+  };
+  const collect = (pattern: RegExp) => lines.flatMap((line) => {
+    const match = line.match(pattern);
+    return match?.[1] ? [{ value: match[1].trim(), unit: match[2]?.trim(), sourceText: line }] : [];
+  });
+  const numberPattern = type === DocumentType.INVOICE
+    ? /(?:invoice\s*(?:number|no\.?|#|id))\s*[:#-]\s*([A-Z0-9][A-Z0-9/_-]*)/i
+    : /(?:purchase\s*order|P\.?O\.?)\s*(?:number|no\.?|#|id)?\s*[:#-]\s*([A-Z0-9][A-Z0-9/_-]*)/i;
+  const datePattern = type === DocumentType.INVOICE
+    ? /(?:invoice\s*date|bill\s*date|date)\s*[:=-]\s*([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}|[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})/i
+    : /(?:purchase\s*order\s*date|P\.?O\.?\s*date|order\s*date|date)\s*[:=-]\s*([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}|[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})/i;
+  const headerNumber = findOne(numberPattern);
+  const dateValue = findOne(datePattern);
+  const supplier = findOne(/(?:supplier|vendor|seller)\s*(?:name)?\s*[:=-]\s*(.+?)(?=\s{2,}|\s+(?:invoice|purchase\s+order|product|date|currency|buyer)\b|$)/im);
+  const productNames = collect(/^(?:item\s*\d*\s*(?:[:=-]\s*)?)?(?:product|item\s+description|description)\s*(?:name)?\s*[:=-]\s*(.+)$/i);
+  const productCodes = collect(/^(?:item\s*\d*\s*(?:[:=-]\s*)?)?(?:product\s*)?code\s*[:=-]\s*([A-Z0-9._/-]+)$/i);
+  const quantities = collect(/^(?:item\s*\d*\s*(?:[:=-]\s*)?)?quantity\s*[:=-]\s*([\d,]+(?:\.\d+)?)\s*([a-zA-Z_]+)?/i);
+  const unitPrices = collect(/^(?:item\s*\d*\s*(?:[:=-]\s*)?)?(?:unit\s*)?(?:price|rate)\s*[:=-]\s*(?:[₹$€£]\s*)?([\d,]+(?:\.\d+)?)/i);
+  const lineTotals = collect(/^(?:item\s*\d*\s*(?:[:=-]\s*)?)?(?:line\s*)?(?:total|amount)\s*[:=-]\s*(?:[₹$€£]\s*)?([\d,]+(?:\.\d+)?)/i);
+  const totalPattern = /(?:grand\s*total|invoice\s*total|total\s*amount|amount\s*due|order\s*total|(?:^|\n)\s*total)\s*[:=-]\s*(?:[₹$€£]\s*)?([\d,]+(?:\.\d+)?)/ig;
+  const totals = [...text.matchAll(totalPattern)];
+  const headerTotalMatch = totals[totals.length - 1];
+  const headerTotal = headerTotalMatch?.[1]?.trim();
+  const currencyMatch = text.match(/\b(INR|USD|EUR|GBP|CAD|AUD|JPY|CNY|CHF|SGD|AED|NZD)\b/i);
+  const symbolCurrency = /₹|Rs\.?/i.test(text) ? 'INR' : /€/.test(text) ? 'EUR' : /£/.test(text) ? 'GBP' : undefined;
+  const currency = currencyMatch?.[1]?.toUpperCase() || symbolCurrency;
+  const poNumber = findOne(/(?:purchase\s*order|P\.?O\.?)\s*(?:number|no\.?|#|id)?\s*[:#-]\s*([A-Z0-9][A-Z0-9/_-]*)/i);
+  const expectedDeliveryDate = findOne(/(?:expected\s*)?(?:delivery|due)\s*date\s*[:=-]\s*([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}|[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})/i);
+
+  const itemCount = Math.max(productNames.length, productCodes.length, quantities.length, unitPrices.length, lineTotals.length, 1);
+  const items: IProcurementExtractedLineItem[] = Array.from({ length: itemCount }, (_, index) => {
+    const name = productNames[index];
+    const code = productCodes[index];
+    const quantity = quantities[index];
+    const unitPrice = unitPrices[index];
+    const total = lineTotals[index];
+    return {
+      description: name?.value,
+      productCode: code?.value,
+      productMatchStatus: 'NEEDS_REVIEW',
+      quantity: quantity?.value.replace(/,/g, ''),
+      unit: quantity?.unit,
+      unitPrice: unitPrice?.value.replace(/,/g, ''),
+      totalAmount: total?.value.replace(/,/g, ''),
+    };
+  });
+
+  const fields: ParsedProcurementField[] = [];
+  const add = (field: string, value: string | undefined, sourceText?: string) => {
+    if (value) {
+      const sourceLine = lines.find((line) => line.toLocaleLowerCase().includes(value.toLocaleLowerCase()));
+      fields.push({ field, value, sourceText: sourceText || sourceLine || value });
+    }
+  };
+  add(type === DocumentType.INVOICE ? 'INVOICE_NUMBER' : 'PO_NUMBER', headerNumber);
+  add(type === DocumentType.INVOICE ? 'INVOICE_DATE' : 'PO_DATE', dateValue);
+  add('SUPPLIER_NAME', supplier);
+  add('CURRENCY', currency);
+  add('TOTAL_AMOUNT', headerTotal?.replace(/,/g, ''), headerTotalMatch?.[0].trim());
+  add('PURCHASE_ORDER_NUMBER', type === DocumentType.INVOICE ? poNumber : undefined);
+  add('EXPECTED_DELIVERY_DATE', expectedDeliveryDate);
+  items.forEach((item, index) => {
+    add(`PRODUCT_NAME_${index + 1}`, item.description);
+    add(`PRODUCT_CODE_${index + 1}`, item.productCode);
+    add(`QUANTITY_${index + 1}`, item.quantity);
+    add(`UNIT_${index + 1}`, item.unit);
+    add(`UNIT_PRICE_${index + 1}`, item.unitPrice);
+    add(`LINE_TOTAL_${index + 1}`, item.totalAmount);
+  });
+
+  const missingFields = [
+    !headerNumber && (type === DocumentType.INVOICE ? 'Invoice number' : 'PO number'),
+    !dateValue && (type === DocumentType.INVOICE ? 'Invoice date' : 'PO date'),
+    !supplier && 'Supplier name',
+    !items.some((item) => item.description || item.productCode) && 'Product',
+    items.some((item) => !item.quantity) && 'Quantity',
+    items.some((item) => !item.unit) && 'Unit',
+    items.some((item) => !item.unitPrice) && 'Unit price',
+    items.some((item) => !item.totalAmount) && 'Line total',
+    !headerTotal && !items.some((item) => item.totalAmount) && 'Total amount',
+    !currency && 'Currency',
+  ].filter((value): value is string => Boolean(value));
+
+  return {
+    fields,
+    data: {
+      documentNumber: headerNumber,
+      documentDate: dateValue ? normalizeProcurementDate(dateValue) : undefined,
+      supplierName: supplier,
+      supplierMatchStatus: supplier ? 'NOT_FOUND' as ProcurementMatchStatus : 'NEEDS_REVIEW' as ProcurementMatchStatus,
+      currency,
+      purchaseOrderNumber: type === DocumentType.INVOICE ? poNumber : undefined,
+      expectedDeliveryDate: expectedDeliveryDate ? normalizeProcurementDate(expectedDeliveryDate) : undefined,
+      totalAmount: headerTotal?.replace(/,/g, ''),
+      items,
+      missingFields,
+      validationWarnings: [],
+    } satisfies IProcurementExtractedData,
+  };
+}
+
+function isValidISODate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function normalizeProcurementDate(value: string) {
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(value);
+  if (iso) {
+    const [year, month, day] = iso.slice(1).map(Number);
+    const normalizedDate = new Date(Date.UTC(year, month - 1, day));
+    if (normalizedDate.getUTCFullYear() === year && normalizedDate.getUTCMonth() === month - 1 && normalizedDate.getUTCDate() === day) {
+      return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+    }
+    return value;
+  }
+  const parts = value.split(/[/-]/).map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) return value;
+  const [first, second, year] = parts;
+  if (year < 1000 || (first <= 12 && second <= 12)) return value;
+  const month = first > 12 ? second : first;
+  const day = first > 12 ? first : second;
+  const normalizedDate = new Date(Date.UTC(year, month - 1, day));
+  if (normalizedDate.getUTCFullYear() !== year || normalizedDate.getUTCMonth() !== month - 1 || normalizedDate.getUTCDate() !== day) {
+    return value;
+  }
+  return `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+}
 
 export class ProcurementDocumentsService {
   async getSuppliers(customerOrganizationId: string) {
@@ -96,6 +256,15 @@ export class ProcurementDocumentsService {
   }) {
     this.validateFile(params.file);
     const { supplier } = await this.getConnectedSupplier(params.supplierId, params.customerOrganizationId);
+    const contentHash = createHash('sha256').update(params.file.buffer).digest('hex');
+    const duplicate = await DocumentModel.findOne({
+      organizationId: params.customerOrganizationId,
+      type: params.type,
+      contentHash,
+    });
+    if (duplicate) {
+      throw new AppError('This procurement document has already been uploaded', 409, 'DUPLICATE_DOCUMENT');
+    }
     const stored = await privateStorage.uploadFile({
       originalname: params.file.originalname,
       buffer: params.file.buffer,
@@ -112,6 +281,7 @@ export class ProcurementDocumentsService {
         filename: path.basename(params.file.originalname),
         fileUrl: 'private://procurement-document',
         storageKey: stored.storageKey,
+        contentHash,
         mimeType: stored.mimeType,
         fileSize: stored.fileSize,
         status: DocumentStatus.UPLOADED,
@@ -120,7 +290,17 @@ export class ProcurementDocumentsService {
       await document.save();
       return this.toResponse(document);
     } catch (error) {
-      await privateStorage.deleteFile(stored.storageKey).catch(() => false);
+      try {
+        const deleted = await privateStorage.deleteFile(stored.storageKey);
+        if (!deleted) logger.warn('Failed to remove uploaded procurement file after document persistence failed');
+      } catch (cleanupError) {
+        logger.error('Failed to remove uploaded procurement file after document persistence failed', {
+          error: String(cleanupError),
+        });
+      }
+      if (this.isDuplicateKey(error)) {
+        throw new AppError('This procurement document has already been uploaded', 409, 'DUPLICATE_DOCUMENT');
+      }
       throw error;
     }
   }
@@ -130,16 +310,194 @@ export class ProcurementDocumentsService {
     if (document.status === DocumentStatus.IMPORTED) {
       throw new AppError('Imported documents cannot be processed again', 409, 'DOCUMENT_IMPORTED');
     }
-
+    if (document.status === DocumentStatus.PROCESSING) {
+      throw new AppError('Document processing is already in progress', 409, 'DOCUMENT_PROCESSING');
+    }
+    const previous = await DocumentExtractionModel.findOne({ documentId: document._id }).sort({ processedAt: -1 });
+    if (previous?.status === 'SUCCESS' && [DocumentStatus.EXTRACTED, DocumentStatus.NEEDS_REVIEW].includes(document.status)) {
+      return this.toResponse(document);
+    }
     document.status = DocumentStatus.PROCESSING;
     document.processingError = undefined;
     await document.save();
-
-    // The configured provider is MOCK and this repository has no PDF/image text extractor.
-    document.status = DocumentStatus.FAILED;
-    document.processingError = EXTRACTION_UNAVAILABLE_REASON;
-    await document.save();
+    let extractionRecord: IDocumentExtractionDocument | null = null;
+    try {
+      const storedDocument = await DocumentModel.findOne({
+        _id: document._id,
+        organizationId: customerOrganizationId,
+      }).select('+storageKey');
+      if (!storedDocument?.storageKey) throw new AppError('Stored source file is unavailable', 404, 'DOCUMENT_FILE_NOT_FOUND');
+      const buffer = await privateStorage.readFile(storedDocument.storageKey);
+      if (!buffer?.length) throw new AppError('Stored source file is empty or unavailable', 422, 'DOCUMENT_FILE_NOT_FOUND');
+      const payload = await extractDocumentTextFromBuffer(
+        document.filename,
+        buffer,
+        document.mimeType,
+        { language: process.env.OCR_LANGUAGE || 'eng' }
+      );
+      const parsed = payload.text ? parseProcurementText(payload.text, document.type as ProcurementDocumentType) : undefined;
+      const extraFields: IExtractionField[] = (parsed?.fields || []).map((field) => {
+        const page = payload.pages.find((item) => item.text.includes(field.sourceText));
+        return {
+          field: field.field,
+          value: field.value,
+          page: page?.pageNumber,
+          confidence: page?.confidence,
+          sourceText: field.sourceText,
+          extractionStatus: 'EXTRACTED',
+        };
+      });
+      extractionRecord = await DocumentExtractionModel.create({
+        documentId: document._id,
+        extractionVersion: EXTRACTION_VERSION,
+        method: payload.method,
+        text: payload.text,
+        pages: payload.pages,
+        pageCount: payload.pages.length,
+        language: payload.language,
+        status: payload.text ? 'SUCCESS' : 'FAILED',
+        errorMessage: payload.errorMessage,
+        fields: [...payload.fields, ...extraFields],
+        processedAt: new Date(),
+      });
+      if (!payload.text || !parsed) {
+        document.status = DocumentStatus.FAILED;
+        document.processingError = payload.errorMessage || 'No readable text was extracted from this document.';
+        await document.save();
+        return this.toResponse(document);
+      }
+      const extractedData = parsed.data;
+      await this.matchExtractedSupplier(extractedData, customerOrganizationId);
+      await this.matchExtractedProducts(extractedData, customerOrganizationId);
+      this.validateExtractedData(extractedData);
+      document.extractedData = extractedData;
+      document.status = DocumentStatus.EXTRACTED;
+      document.processingError = undefined;
+      await document.save();
+    } catch (error) {
+      document.status = DocumentStatus.FAILED;
+      document.processingError = error instanceof Error ? error.message : 'Document processing failed';
+      if (extractionRecord) {
+        extractionRecord.status = 'PARTIAL';
+        extractionRecord.errorMessage = document.processingError;
+        await extractionRecord.save().catch((saveError) => {
+          logger.error('Failed to persist procurement extraction failure', {
+            documentId: document._id.toString(),
+            error: String(saveError),
+          });
+        });
+      } else {
+        try {
+          await DocumentExtractionModel.create({
+            documentId: document._id,
+            extractionVersion: EXTRACTION_VERSION,
+            status: 'FAILED',
+            language: process.env.OCR_LANGUAGE || 'eng',
+            errorMessage: document.processingError,
+            fields: [],
+            pages: [],
+            processedAt: new Date(),
+          });
+        } catch (saveError) {
+          logger.error('Failed to persist procurement extraction failure', {
+            documentId: document._id.toString(),
+            error: String(saveError),
+          });
+        }
+      }
+      await document.save();
+    }
     return this.toResponse(document);
+  }
+
+  private async matchExtractedSupplier(data: IProcurementExtractedData, customerOrganizationId: string) {
+    if (!data.supplierName) return;
+    const connected = await this.getSuppliers(customerOrganizationId);
+    const matches = connected.filter((supplier) => normalizeMatchText(supplier.name) === normalizeMatchText(data.supplierName!));
+    if (matches.length === 1) {
+      data.supplierMatchStatus = 'MATCHED';
+      data.matchedSupplierId = matches[0]._id;
+    } else {
+      data.supplierMatchStatus = matches.length > 1 ? 'MULTIPLE_MATCHES' : 'NOT_FOUND';
+      data.validationWarnings.push(matches.length
+        ? 'More than one connected supplier exactly matches the extracted supplier name.'
+        : 'No connected supplier exactly matches the extracted supplier name. Select and verify the supplier manually.');
+    }
+  }
+
+  private async matchExtractedProducts(data: IProcurementExtractedData, customerOrganizationId: string) {
+    const supplierId = data.matchedSupplierId;
+    if (!supplierId) return;
+    const { supplier } = await this.getConnectedSupplier(supplierId, customerOrganizationId);
+    const products = await ProductModel.find({ supplierId: supplier._id, status: ProductStatus.ACTIVE });
+    for (const [itemIndex, item] of data.items.entries()) {
+      const matches = item.productCode
+        ? products.filter((product) => product.productCode && normalizeMatchText(product.productCode) === normalizeMatchText(item.productCode!))
+        : item.description
+          ? products.filter((product) => normalizeMatchText(product.name) === normalizeMatchText(item.description!))
+          : [];
+      if (matches.length === 1) {
+        item.matchedProductId = matches[0]._id.toString();
+        if (item.unit && item.unit !== matches[0].unit) {
+          item.productMatchStatus = 'NEEDS_REVIEW';
+          data.validationWarnings.push(`Extracted unit "${item.unit}" on line ${itemIndex + 1} differs from the catalog unit "${matches[0].unit}"; confirm units and any quantity conversion.`);
+        } else {
+          item.productMatchStatus = 'MATCHED';
+        }
+      } else {
+        item.productMatchStatus = matches.length > 1 ? 'MULTIPLE_MATCHES' : item.description || item.productCode ? 'NOT_FOUND' : 'NEEDS_REVIEW';
+        data.validationWarnings.push(matches.length
+          ? `More than one active product matches line item${item.productCode ? ` code ${item.productCode}` : ` ${item.description}`}.`
+          : `No active supplier product matches line item${item.productCode ? ` code ${item.productCode}` : item.description ? ` ${item.description}` : ''}; choose a product manually.`);
+      }
+    }
+  }
+
+  private validateExtractedData(data: IProcurementExtractedData) {
+    if (data.supplierMatchStatus !== 'MATCHED' && data.supplierName) {
+      if (!data.missingFields.includes('Supplier match')) data.missingFields.push('Supplier match');
+    }
+    if (data.documentDate && !isValidISODate(data.documentDate)) {
+      data.validationWarnings.push('Date format is ambiguous or invalid; confirm the date against the source document.');
+      if (!data.missingFields.includes('Valid document date')) data.missingFields.push('Valid document date');
+    }
+    if (data.currency) {
+      try {
+        new Intl.NumberFormat('en', { style: 'currency', currency: data.currency }).format(0);
+      } catch {
+        data.validationWarnings.push(`Currency ${data.currency} is not recognized.`);
+        data.missingFields.push('Valid currency');
+      }
+    }
+    data.items.forEach((item, index) => {
+      if (item.unit && !PRODUCT_UNITS.includes(item.unit as (typeof PRODUCT_UNITS)[number])) {
+        data.validationWarnings.push(`Line ${index + 1} uses unsupported unit "${item.unit}".`);
+        data.missingFields.push(`Supported unit for line ${index + 1}`);
+      }
+      const quantity = Number(item.quantity);
+      const unitPrice = Number(item.unitPrice);
+      const lineTotal = Number(item.totalAmount);
+      if (item.quantity && (!Number.isFinite(quantity) || quantity <= 0)) {
+        data.validationWarnings.push(`Line ${index + 1} quantity must be greater than zero.`);
+      }
+      if (item.unitPrice && (!Number.isFinite(unitPrice) || unitPrice < 0)) {
+        data.validationWarnings.push(`Line ${index + 1} unit price is invalid.`);
+      }
+      if (item.totalAmount && (!Number.isFinite(lineTotal) || lineTotal < 0)) {
+        data.validationWarnings.push(`Line ${index + 1} total is invalid.`);
+      }
+      if (quantity > 0 && unitPrice >= 0 && lineTotal >= 0) {
+        const expected = quantity * unitPrice;
+        if (Math.abs(expected - lineTotal) > Math.max(0.02, expected * 0.005)) {
+          data.validationWarnings.push(`Line ${index + 1} total does not approximately equal quantity multiplied by unit price; check tax, rounding, and source values.`);
+        }
+      }
+    });
+    const total = Number(data.totalAmount);
+    const lineTotal = data.items.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0);
+    if (Number.isFinite(total) && lineTotal > total + Math.max(0.02, total * 0.005)) {
+      data.validationWarnings.push('The extracted line totals exceed the document total.');
+    }
   }
 
   async saveReview(
@@ -163,24 +521,62 @@ export class ProcurementDocumentsService {
       throw new AppError('Choose a valid supplier and product', 400, 'INVALID_MATCH');
     }
     const { supplier } = await this.getConnectedSupplier(parsed.data.supplierId, customerOrganizationId);
-    const product = await ProductModel.findById(parsed.data.productId);
-    if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
-    if (product.supplierId.toString() !== supplier._id.toString()) {
-      throw new AppError('Product does not belong to the selected supplier', 400, 'PRODUCT_SUPPLIER_MISMATCH');
-    }
-    if (product.status !== ProductStatus.ACTIVE) {
-      throw new AppError('Inactive products cannot be purchased', 400, 'INACTIVE_PRODUCT');
-    }
-    if (parsed.data.unit.trim() !== product.unit) {
-      throw new AppError(`Purchase unit must match the product unit (${product.unit})`, 400, 'UNIT_MISMATCH');
+    const items: IProcurementReviewLineItem[] = parsed.data.items?.length
+      ? parsed.data.items
+      : [{
+        productId: parsed.data.productId,
+        description: '',
+        quantity: parsed.data.quantity,
+        unit: parsed.data.unit,
+        unitPrice: parsed.data.unitPrice,
+        totalAmount: parsed.data.totalAmount,
+      }];
+    for (const item of items) {
+      const product = await ProductModel.findOne({ _id: item.productId, supplierId: supplier._id, status: ProductStatus.ACTIVE });
+      if (!product) throw new AppError('Each selected product must be active and belong to the selected supplier', 400, 'PRODUCT_SUPPLIER_MISMATCH');
+      if (item.unit.trim() !== product.unit) {
+        throw new AppError(`Purchase unit must match the product unit (${product.unit})`, 400, 'UNIT_MISMATCH');
+      }
     }
     if (!Number.isFinite(new Date(parsed.data.documentDate).getTime())) {
       throw new AppError('Enter a valid document date', 400, 'INVALID_REVIEW');
     }
-
+    this.validateCurrency(parsed.data.currency);
+    const validationWarnings = this.reviewValidationWarnings(parsed.data.totalAmount, items);
     document.reviewData = {
       ...parsed.data,
-      source: 'MANUAL',
+      productId: items[0].productId,
+      quantity: items[0].quantity,
+      unit: items[0].unit,
+      unitPrice: items[0].unitPrice,
+      totalAmount: parsed.data.totalAmount,
+      items,
+      source: parsed.data.source || 'MANUAL',
+      validationWarnings,
+    };
+    const priorExtracted = document.extractedData;
+    document.extractedData = {
+      documentNumber: priorExtracted?.documentNumber,
+      documentDate: priorExtracted?.documentDate,
+      supplierName: priorExtracted?.supplierName,
+      matchedSupplierId: supplier._id.toString(),
+      supplierMatchStatus: 'MATCHED',
+      currency: priorExtracted?.currency,
+      purchaseOrderNumber: priorExtracted?.purchaseOrderNumber,
+      expectedDeliveryDate: priorExtracted?.expectedDeliveryDate,
+      totalAmount: priorExtracted?.totalAmount,
+      items: items.map((item) => ({
+        description: item.description,
+        productCode: item.productCode,
+        productMatchStatus: 'MATCHED',
+        matchedProductId: item.productId,
+        quantity: item.quantity,
+        unit: item.unit,
+        unitPrice: item.unitPrice,
+        totalAmount: item.totalAmount,
+      })),
+      missingFields: priorExtracted?.missingFields || [],
+      validationWarnings: [...(priorExtracted?.validationWarnings || []), ...validationWarnings],
     };
     document.status = DocumentStatus.NEEDS_REVIEW;
     document.reviewedBy = undefined;
@@ -200,8 +596,27 @@ export class ProcurementDocumentsService {
 
     const data = document.reviewData;
     const { supplier, organization } = await this.getConnectedSupplier(data.supplierId, customerOrganizationId);
-    const product = await ProductModel.findOne({ _id: data.productId, supplierId: supplier._id, status: ProductStatus.ACTIVE });
-    if (!product) throw new AppError('The selected product is unavailable for this supplier', 400, 'INVALID_PRODUCT');
+    const items: IProcurementReviewLineItem[] = data.items?.length
+      ? data.items
+      : [{
+        productId: data.productId,
+        description: '',
+        quantity: data.quantity,
+        unit: data.unit,
+        unitPrice: data.unitPrice,
+        totalAmount: data.totalAmount,
+      }];
+    const importWarnings = this.reviewValidationWarnings(String(data.totalAmount), items);
+    if (importWarnings.some((warning) => /quantity must be greater|unit price is invalid|total is invalid|line totals do not equal/i.test(warning))) {
+      throw new AppError('Resolve invalid procurement amounts and ensure line totals match the document total before importing', 409, 'PROCUREMENT_TOTAL_MISMATCH');
+    }
+    const resolvedItems = await Promise.all(items.map(async (item) => {
+      const product = await ProductModel.findOne({ _id: item.productId, supplierId: supplier._id, status: ProductStatus.ACTIVE });
+      if (!product) throw new AppError('A selected product is unavailable for this supplier', 400, 'INVALID_PRODUCT');
+      if (product.unit !== item.unit) throw new AppError(`Purchase unit must match the product unit (${product.unit})`, 400, 'UNIT_MISMATCH');
+      this.validateCurrency(data.currency);
+      return { ...item, product };
+    }));
 
     if (document.type === DocumentType.PURCHASE_ORDER) {
       const duplicate = await PurchaseOrderModel.findOne({
@@ -221,14 +636,14 @@ export class ProcurementDocumentsService {
           expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate) : undefined,
           currency: data.currency,
           totalAmount: Number(data.totalAmount),
-          items: [{
-            description: product.name,
-            quantity: Number(data.quantity),
-            unit: data.unit,
-            unitPrice: Number(data.unitPrice),
-            totalPrice: Number(data.totalAmount),
-            productId: product._id,
-          }],
+          items: resolvedItems.map((item) => ({
+            description: item.description || item.product.name,
+            quantity: Number(item.quantity),
+            unit: item.unit,
+            unitPrice: Number(item.unitPrice),
+            totalPrice: Number(item.totalAmount),
+            productId: item.product._id,
+          })),
           documentId: document._id,
           status: 'ISSUED',
         });
@@ -246,10 +661,15 @@ export class ProcurementDocumentsService {
         document.reviewedAt = new Date();
         await document.save();
       } catch (error) {
-        await PurchaseOrderModel.deleteOne({ _id: purchaseOrder._id });
+        await PurchaseOrderModel.deleteOne({ _id: purchaseOrder._id }).catch((cleanupError) => {
+          logger.error('Failed to roll back imported purchase order', {
+            purchaseOrderId: purchaseOrder._id.toString(),
+            error: String(cleanupError),
+          });
+        });
         throw error;
       }
-      return { document: await this.toResponse(document), purchaseOrder, purchase: null, warning: null };
+      return { document: await this.toResponse(document), purchaseOrder, purchase: null, purchases: [], warning: null };
     }
 
     const duplicateInvoice = await InvoiceModel.findOne({
@@ -275,6 +695,12 @@ export class ProcurementDocumentsService {
       });
       if (!linkedPurchaseOrder) warning = 'PO reference found, but matching PO was not found.';
     }
+    const extraction = await DocumentExtractionModel.findOne({ documentId: document._id }).sort({ processedAt: -1 });
+    const extractionStatus = document.processingError || extraction?.status === 'FAILED' || extraction?.status === 'PARTIAL'
+      ? ExtractionStatus.FAILED
+      : extraction?.status === 'SUCCESS'
+      ? ExtractionStatus.SUCCESS
+      : ExtractionStatus.PENDING;
 
     let invoice;
     try {
@@ -285,17 +711,17 @@ export class ProcurementDocumentsService {
         invoiceDate: new Date(data.documentDate),
         currency: data.currency,
         totalAmount: Number(data.totalAmount),
-        items: [{
-          description: product.name,
-          quantity: Number(data.quantity),
-          unit: data.unit,
-          unitPrice: Number(data.unitPrice),
-          totalPrice: Number(data.totalAmount),
-          productId: product._id,
-        }],
+        items: resolvedItems.map((item) => ({
+          description: item.description || item.product.name,
+          quantity: Number(item.quantity),
+          unit: item.unit,
+          unitPrice: Number(item.unitPrice),
+          totalPrice: Number(item.totalAmount),
+          productId: item.product._id,
+        })),
         documentId: document._id,
         purchaseOrderId: linkedPurchaseOrder?._id,
-        extractionStatus: ExtractionStatus.FAILED,
+        extractionStatus,
       });
     } catch (error) {
       if (this.isDuplicateKey(error)) {
@@ -304,41 +730,54 @@ export class ProcurementDocumentsService {
       throw error;
     }
 
-    let purchase: Awaited<ReturnType<typeof purchasesService.create>> | undefined;
+    const purchases: Awaited<ReturnType<typeof purchasesService.createFromProcurementDocument>>[] = [];
     try {
-      purchase = await purchasesService.create({
-        supplierId: supplier._id.toString(),
-        productId: product._id.toString(),
-        quantity: data.quantity,
-        unit: data.unit,
-        unitPrice: data.unitPrice,
-        totalAmount: data.totalAmount,
-        currency: data.currency,
-        purchaseDate: data.documentDate,
-        referenceNumber: data.documentNumber,
-        purchaseOrderId: linkedPurchaseOrder?._id.toString(),
-        invoiceId: invoice._id.toString(),
-        status: PurchaseStatus.CONFIRMED,
-      }, customerOrganizationId);
+      for (const [index, item] of resolvedItems.entries()) {
+        const purchase = await purchasesService.createFromProcurementDocument({
+          supplierId: supplier._id.toString(),
+          productId: item.product._id.toString(),
+          quantity: item.quantity,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+          totalAmount: item.totalAmount,
+          currency: data.currency,
+          purchaseDate: String(data.documentDate),
+          referenceNumber: resolvedItems.length === 1 ? data.documentNumber : `${data.documentNumber}-L${index + 1}`,
+          purchaseOrderId: linkedPurchaseOrder?._id.toString(),
+          invoiceId: invoice._id.toString(),
+          status: PurchaseStatus.CONFIRMED,
+        }, customerOrganizationId);
+        purchases.push(purchase);
+      }
       document.invoiceId = invoice._id.toString();
-      document.purchaseId = purchase._id.toString();
+      document.purchaseIds = purchases.map((purchase) => purchase._id.toString());
+      document.purchaseId = purchases[0]?._id.toString();
       document.purchaseOrderId = linkedPurchaseOrder?._id.toString();
       document.status = DocumentStatus.IMPORTED;
       document.reviewedBy = userId;
       document.reviewedAt = new Date();
       await document.save();
     } catch (error) {
-      if (purchase?._id) {
-        await PurchaseModel.deleteOne({ _id: purchase._id }).catch(() => undefined);
-      }
-      await InvoiceModel.deleteOne({ _id: invoice._id }).catch(() => undefined);
+      await Promise.all(purchases.map((purchase) => PurchaseModel.deleteOne({ _id: purchase._id }).catch((cleanupError) => {
+        logger.error('Failed to roll back an invoice purchase line', {
+          purchaseId: purchase._id.toString(),
+          invoiceId: invoice._id.toString(),
+          error: String(cleanupError),
+        });
+      })));
+      await InvoiceModel.deleteOne({ _id: invoice._id }).catch((cleanupError) => {
+        logger.error('Failed to roll back imported invoice', {
+          invoiceId: invoice._id.toString(),
+          error: String(cleanupError),
+        });
+      });
       if (this.isDuplicateKey(error) || (error instanceof AppError && error.code === 'PURCHASE_EXISTS')) {
         throw new AppError('This invoice may already have been imported', 409, 'POSSIBLE_DUPLICATE');
       }
       throw error;
     }
 
-    return { document: await this.toResponse(document), purchaseOrder: linkedPurchaseOrder, purchase, warning };
+    return { document: await this.toResponse(document), purchaseOrder: linkedPurchaseOrder, purchase: purchases[0] || null, purchases, warning };
   }
 
   async readFile(id: string, customerOrganizationId: string) {
@@ -364,6 +803,39 @@ export class ProcurementDocumentsService {
     return { supplier, organization };
   }
 
+  private validateCurrency(currency: string) {
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      throw new AppError('Enter a valid 3-letter currency code', 400, 'INVALID_CURRENCY');
+    }
+    try {
+      new Intl.NumberFormat('en', { style: 'currency', currency }).format(0);
+    } catch {
+      throw new AppError(`Currency ${currency} is not recognized`, 400, 'INVALID_CURRENCY');
+    }
+  }
+
+  private reviewValidationWarnings(total: string, items: IProcurementReviewLineItem[]) {
+    const warnings: string[] = [];
+    for (const [index, item] of items.entries()) {
+      const quantity = Number(item.quantity);
+      const price = Number(item.unitPrice);
+      const lineTotal = Number(item.totalAmount);
+      if (!Number.isFinite(quantity) || quantity <= 0) warnings.push(`Line ${index + 1} quantity must be greater than zero.`);
+      if (!Number.isFinite(price) || price < 0) warnings.push(`Line ${index + 1} unit price is invalid.`);
+      if (!Number.isFinite(lineTotal) || lineTotal < 0) warnings.push(`Line ${index + 1} total is invalid.`);
+      const expected = quantity * price;
+      if (Number.isFinite(expected) && Number.isFinite(lineTotal) && Math.abs(expected - lineTotal) > Math.max(0.02, expected * 0.005)) {
+        warnings.push(`Line ${index + 1} total does not approximately equal quantity multiplied by unit price; check tax, rounding, and source values.`);
+      }
+    }
+    const amount = Number(total);
+    const linesTotal = items.reduce((sum, item) => sum + Number(item.totalAmount), 0);
+    if (Number.isFinite(amount) && Math.abs(linesTotal - amount) > Math.max(0.02, amount * 0.005)) {
+      warnings.push('Line totals do not equal the document total; review taxes, rounding, and source values.');
+    }
+    return warnings;
+  }
+
   private async findDocument(id: string, customerOrganizationId: string) {
     if (!mongoose.isValidObjectId(id)) throw new AppError('Document not found', 404, 'NOT_FOUND');
     const document = await DocumentModel.findOne({ _id: id, organizationId: customerOrganizationId });
@@ -384,9 +856,12 @@ export class ProcurementDocumentsService {
     const organization = supplier ? await OrganizationModel.findById(supplier.organizationId) : null;
     const result = document.toObject() as Record<string, any>;
     delete result.storageKey;
+    delete result.contentHash;
     delete result.fileUrl;
+    const extraction = await DocumentExtractionModel.findOne({ documentId: document._id }).sort({ processedAt: -1 });
     return {
       ...result,
+      extraction: extraction?.toObject?.() || extraction || null,
       supplier: supplier ? { _id: supplier._id.toString(), name: organization?.name || 'Supplier' } : null,
       downloadPath: `/api/procurement-documents/${document._id}/file`,
     };

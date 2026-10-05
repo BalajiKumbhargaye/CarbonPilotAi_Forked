@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   purchaseOrders: [] as any[],
   purchases: [] as any[],
   storedFiles: [] as any[],
+  extractions: [] as any[],
+  ocrPayload: {} as any,
   nextId: 0,
 }));
 
@@ -88,6 +90,9 @@ vi.mock('../src/services/abstractions/IStorageService', () => ({
     return extension === 'pdf' && file.mimetype === 'application/pdf' && file.buffer.subarray(0, 5).toString() === '%PDF-';
   }),
 }));
+vi.mock('../src/services/ocr/document-extractor', () => ({
+  extractDocumentTextFromBuffer: vi.fn(async () => state.ocrPayload),
+}));
 vi.mock('../src/models/Document', () => ({
   DocumentModel: {
     create: vi.fn(async (values: any) => {
@@ -103,6 +108,23 @@ vi.mock('../src/models/Document', () => ({
         then: (resolve: (value: any) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(document).then(resolve, reject),
       };
     }),
+  },
+}));
+vi.mock('../src/models/DocumentExtraction', () => ({
+  DocumentExtractionModel: {
+    create: vi.fn(async (values: any) => {
+      const extraction: any = {
+        ...values,
+        _id: `extraction-${++state.nextId}`,
+        save: vi.fn(async () => extraction),
+        toObject: () => ({ ...extraction, save: undefined, toObject: undefined }),
+      };
+      state.extractions.push(extraction);
+      return extraction;
+    }),
+    findOne: vi.fn((query: any) => ({
+      sort: async () => state.extractions.filter((item) => String(item.documentId) === String(query.documentId)).at(-1) || null,
+    })),
   },
 }));
 vi.mock('../src/models/Supplier', () => ({
@@ -131,6 +153,9 @@ vi.mock('../src/models/SupplierRelationship', () => ({
 vi.mock('../src/models/Product', () => ({
   ProductModel: {
     findById: vi.fn(async (id: string) => state.products.find((product) => product._id === String(id)) || null),
+    find: vi.fn(async (query: any) => state.products.filter((product) =>
+      product.supplierId === String(query.supplierId) && product.status === query.status
+    )),
     findOne: vi.fn(async (query: any) => state.products.find((product) => matches(product, query)) || null),
   },
 }));
@@ -165,6 +190,11 @@ vi.mock('../src/models/Purchase', () => ({
 vi.mock('../src/modules/procurement/purchases.service', () => ({
   purchasesService: {
     create: vi.fn(async (values: any) => {
+      const purchase = { ...values, _id: `purchase-${++state.nextId}` };
+      state.purchases.push(purchase);
+      return purchase;
+    }),
+    createFromProcurementDocument: vi.fn(async (values: any) => {
       const purchase = { ...values, _id: `purchase-${++state.nextId}` };
       state.purchases.push(purchase);
       return purchase;
@@ -215,6 +245,15 @@ function resetState() {
   }];
   state.purchases = [];
   state.storedFiles = [];
+  state.extractions = [];
+  state.ocrPayload = {
+    method: 'NATIVE_TEXT',
+    text: '',
+    pages: [],
+    language: 'eng',
+    errorMessage: 'Document extraction service unavailable',
+    fields: [],
+  };
   state.nextId = 0;
 }
 
@@ -267,6 +306,19 @@ describe('procurement document ingestion', () => {
     });
     expect(state.storedFiles).toHaveLength(1);
     expect(uploaded).not.toHaveProperty('storageKey');
+    await expect(procurementDocumentsService.uploadDocument({
+      file: {
+        originalname: 'duplicate-invoice.pdf',
+        mimetype: 'application/pdf',
+        size: 9,
+        buffer: Buffer.from('%PDF-test'),
+      } as Express.Multer.File,
+      customerOrganizationId: ids.buyerA,
+      userId: ids.userA,
+      supplierId: ids.supplierA,
+      type: DocumentType.INVOICE,
+    })).rejects.toMatchObject({ code: 'DUPLICATE_DOCUMENT' });
+    expect(state.storedFiles).toHaveLength(1);
   });
 
   it('rejects unsupported signatures and suppliers outside the buyer network', async () => {
@@ -309,6 +361,7 @@ describe('procurement document ingestion', () => {
       type: DocumentType.INVOICE,
       filename: 'invoice.pdf',
       status: DocumentStatus.UPLOADED,
+      storageKey: 'test-source',
     });
     state.documents.push(document);
 
@@ -316,6 +369,204 @@ describe('procurement document ingestion', () => {
 
     expect(processed.status).toBe(DocumentStatus.FAILED);
     expect(processed.processingError).toBe('Document extraction service unavailable');
+    expect(processed.extraction).toMatchObject({ status: 'FAILED', errorMessage: 'Document extraction service unavailable' });
+  });
+
+  it('extracts invoice fields, matches connected supplier/product, and persists source OCR for buyer review', async () => {
+    const document = makeDocument({
+      organizationId: ids.buyerA,
+      supplierId: ids.supplierA,
+      storageKey: 'test-source',
+      type: DocumentType.INVOICE,
+      filename: 'invoice.pdf',
+      mimeType: 'application/pdf',
+      status: DocumentStatus.UPLOADED,
+    });
+    state.documents.push(document);
+    const text = [
+      'Invoice Number: INV-1024',
+      'Invoice Date: 2026-09-15',
+      'Supplier: GreenForge Industries',
+      'Currency: INR',
+      'Item 1 Product: Steel Sheet',
+      'Item 1 Product code: ST-01',
+      'Item 1 Quantity: 1000 kg',
+      'Item 1 Unit price: 72',
+      'Item 1 Line total: 72000',
+      'Invoice total: 72000',
+    ].join('\n');
+    state.ocrPayload = {
+      method: 'OCR',
+      text,
+      pages: [{ pageNumber: 1, text, method: 'OCR', confidence: 0.94 }],
+      language: 'eng',
+      fields: [],
+    };
+
+    const processed = await procurementDocumentsService.process(ids.document, ids.buyerA);
+
+    expect(processed.status).toBe(DocumentStatus.EXTRACTED);
+    expect(processed.extractedData).toMatchObject({
+      documentNumber: 'INV-1024',
+      documentDate: '2026-09-15',
+      supplierMatchStatus: 'MATCHED',
+      matchedSupplierId: ids.supplierA,
+      currency: 'INR',
+      items: [{
+        description: 'Steel Sheet',
+        productCode: 'ST-01',
+        productMatchStatus: 'MATCHED',
+        matchedProductId: ids.productA,
+        quantity: '1000',
+        unit: 'kg',
+        unitPrice: '72',
+        totalAmount: '72000',
+      }],
+    });
+    expect(processed.extraction).toMatchObject({
+      method: 'OCR',
+      status: 'SUCCESS',
+      fields: expect.arrayContaining([
+        expect.objectContaining({ field: 'INVOICE_NUMBER', value: 'INV-1024', page: 1, confidence: 0.94 }),
+      ]),
+    });
+
+    const reviewed = await procurementDocumentsService.saveReview(ids.document, ids.buyerA, ids.userA, {
+      ...review,
+      source: 'EXTRACTED',
+      items: [{
+        productId: ids.productA,
+        description: 'Steel Sheet',
+        productCode: 'ST-01',
+        quantity: '1000',
+        unit: 'kg',
+        unitPrice: '72',
+        totalAmount: '72000',
+      }],
+    } as any);
+    const imported = await procurementDocumentsService.importDocument(ids.document, ids.buyerA, ids.userA);
+    expect(reviewed.reviewData.source).toBe('EXTRACTED');
+    expect(imported.document.status).toBe(DocumentStatus.IMPORTED);
+    expect(imported.purchases).toHaveLength(1);
+    expect(imported.purchases[0]).toMatchObject({ unitPrice: '72', totalAmount: '72000', currency: 'INR' });
+    expect(imported.document.extraction.method).toBe('OCR');
+    const buyerResult = await fetch(`${apiUrl}/api/procurement-documents/${ids.document}`, {
+      headers: { Authorization: "Bearer " + token },
+    });
+    expect(buyerResult.status).toBe(200);
+    const buyerPayload = await buyerResult.json();
+    expect(buyerPayload.data).toMatchObject({
+      status: DocumentStatus.IMPORTED,
+      extractedData: { documentNumber: 'INV-1024', items: [{ matchedProductId: ids.productA }] },
+      extraction: { method: 'OCR', status: 'SUCCESS' },
+      purchaseIds: [imported.purchases[0]._id],
+    });
+  });
+
+  it('leaves invoice fields unavailable when OCR text does not contain them', async () => {
+    const document = makeDocument({
+      organizationId: ids.buyerA,
+      supplierId: ids.supplierA,
+      storageKey: 'test-source',
+      type: DocumentType.INVOICE,
+      filename: 'invoice-with-gaps.pdf',
+      mimeType: 'application/pdf',
+      status: DocumentStatus.UPLOADED,
+    });
+    state.documents.push(document);
+    const text = [
+      'Invoice Number: INV-1025',
+      'Supplier: GreenForge Industries',
+      'Item 1 Product: Steel Sheet',
+      'Item 1 Quantity: 1000 kg',
+      'Item 1 Unit price: 72',
+      'Item 1 Line total: 72000',
+      'Invoice total: 72000',
+    ].join('\n');
+    state.ocrPayload = {
+      method: 'OCR',
+      text,
+      pages: [{ pageNumber: 1, text, method: 'OCR' }],
+      language: 'eng',
+      fields: [],
+    };
+
+    const processed = await procurementDocumentsService.process(ids.document, ids.buyerA);
+    expect(processed.extractedData).toMatchObject({
+      supplierMatchStatus: 'MATCHED',
+      currency: undefined,
+      documentDate: undefined,
+    });
+    expect(processed.extractedData.missingFields).toEqual(expect.arrayContaining(['Invoice date', 'Currency']));
+  });
+
+  it('does not guess an ambiguous date or convert an extracted product unit', async () => {
+    const document = makeDocument({
+      organizationId: ids.buyerA,
+      supplierId: ids.supplierA,
+      storageKey: 'test-source',
+      type: DocumentType.INVOICE,
+      filename: 'invoice-with-ambiguous-values.pdf',
+      mimeType: 'application/pdf',
+      status: DocumentStatus.UPLOADED,
+    });
+    state.documents.push(document);
+    const text = [
+      'Invoice Number: INV-1026',
+      'Invoice Date: 04/05/2026',
+      'Supplier: GreenForge Industries',
+      'Currency: INR',
+      'Product: Steel Sheet',
+      'Product code: ST-01',
+      'Quantity: 2 ton',
+      'Unit price: 72',
+      'Line total: 144',
+      'Invoice total: 144',
+    ].join('\n');
+    state.ocrPayload = {
+      method: 'OCR',
+      text,
+      pages: [{ pageNumber: 1, text, method: 'OCR' }],
+      language: 'eng',
+      fields: [],
+    };
+
+    const processed = await procurementDocumentsService.process(ids.document, ids.buyerA);
+    expect(processed.extractedData.documentDate).toBe('04/05/2026');
+    expect(processed.extractedData.missingFields).toContain('Valid document date');
+    expect(processed.extractedData.items[0]).toMatchObject({
+      quantity: '2',
+      unit: 'ton',
+      matchedProductId: ids.productA,
+      productMatchStatus: 'NEEDS_REVIEW',
+    });
+    expect(processed.extractedData.validationWarnings.join(' ')).toContain('confirm units and any quantity conversion');
+  });
+
+  it('blocks importing line items that do not reconcile to the invoice total', async () => {
+    const document = makeDocument({
+      organizationId: ids.buyerA,
+      supplierId: ids.supplierA,
+      type: DocumentType.INVOICE,
+      status: DocumentStatus.UPLOADED,
+    });
+    state.documents.push(document);
+    await procurementDocumentsService.saveReview(ids.document, ids.buyerA, ids.userA, {
+      ...review,
+      totalAmount: '71000',
+      items: [{
+        productId: ids.productA,
+        description: 'Steel Sheet',
+        quantity: '1000',
+        unit: 'kg',
+        unitPrice: '72',
+        totalAmount: '72000',
+      }],
+    } as any);
+    await expect(procurementDocumentsService.importDocument(ids.document, ids.buyerA, ids.userA))
+      .rejects.toMatchObject({ code: 'PROCUREMENT_TOTAL_MISMATCH' });
+    expect(state.invoices).toHaveLength(0);
+    expect(state.purchases).toHaveLength(0);
   });
 
   it('rejects a product owned by another supplier and a unit that differs from the catalog', async () => {
@@ -328,7 +579,7 @@ describe('procurement document ingestion', () => {
     } as any)).rejects.toMatchObject({ code: 'PRODUCT_SUPPLIER_MISMATCH' });
     await expect(procurementDocumentsService.saveReview(ids.document, ids.buyerA, ids.userA, {
       ...review,
-      unit: 'tonne',
+      unit: 'gram',
     } as any)).rejects.toMatchObject({ code: 'UNIT_MISMATCH' });
     await expect(procurementDocumentsService.saveReview(ids.document, ids.buyerA, ids.userA, {
       ...review,
@@ -344,6 +595,7 @@ describe('procurement document ingestion', () => {
       supplierId: ids.supplierA,
       type: DocumentType.INVOICE,
       status: DocumentStatus.FAILED,
+      processingError: 'Document extraction service unavailable',
     });
     state.documents.push(document);
 
@@ -359,6 +611,32 @@ describe('procurement document ingestion', () => {
     expect(imported.purchase).toMatchObject({ referenceNumber: 'INV-1024', purchaseOrderId: '888888888888888888888888' });
     expect(imported.warning).toBeNull();
     expect(state.invoices[0]).toMatchObject({ invoiceNumber: 'INV-1024', extractionStatus: 'FAILED' });
+  });
+
+  it('imports every reviewed invoice line as a separate purchase with a stable source reference', async () => {
+    const document = makeDocument({
+      organizationId: ids.buyerA,
+      supplierId: ids.supplierA,
+      type: DocumentType.INVOICE,
+      status: DocumentStatus.NEEDS_REVIEW,
+      reviewData: {
+        ...review,
+        documentNumber: 'INV-MULTI-01',
+        totalAmount: '21600',
+        items: [
+          { productId: ids.productA, description: 'Steel sheet, standard', quantity: '100', unit: 'kg', unitPrice: '72', totalAmount: '7200' },
+          { productId: ids.productA, description: 'Steel sheet, heavy', quantity: '200', unit: 'kg', unitPrice: '72', totalAmount: '14400' },
+        ],
+      },
+    });
+    state.documents.push(document);
+
+    const imported = await procurementDocumentsService.importDocument(ids.document, ids.buyerA, ids.userA);
+
+    expect(imported.purchases).toHaveLength(2);
+    expect(imported.purchases.map((purchase) => purchase.referenceNumber)).toEqual(['INV-MULTI-01-L1', 'INV-MULTI-01-L2']);
+    expect(state.invoices[0].items).toHaveLength(2);
+    expect(imported.document.purchaseIds).toEqual(imported.purchases.map((purchase) => purchase._id));
   });
 
   it('blocks likely duplicate invoice imports', async () => {
@@ -415,7 +693,7 @@ describe('procurement document ingestion', () => {
     state.documents.push(foreignDocument);
 
     const foreignRead = await fetch(`${apiUrl}/api/procurement-documents/${ids.document}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: 'Bearer ' + token },
     });
     expect(foreignRead.status).toBe(404);
     const foreignFile = await fetch(`${apiUrl}/api/procurement-documents/${ids.document}/file`, {

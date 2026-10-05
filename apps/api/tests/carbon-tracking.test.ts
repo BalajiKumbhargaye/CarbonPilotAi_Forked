@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { calculateExpectedActualTracking } from '../src/modules/carbon';
+import { calculateCarbonEmissions, calculateExpectedActualTracking } from '../src/modules/carbon';
+
+function track(params: Parameters<typeof calculateExpectedActualTracking>[0]) {
+  return calculateExpectedActualTracking({
+    expectedQuantityUnit: 'kg',
+    expectedMethodology: 'ISO 14067',
+    actualQuantityUnit: 'kg',
+    actualMethodology: 'ISO 14067',
+    ...params,
+  });
+}
 
 describe('expected vs actual carbon tracking', () => {
   it('calculates a normal expected-versus-actual variance', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100_000,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -26,7 +36,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('returns a zero variance when expected and actual values are equal', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -47,7 +57,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('returns a negative variance when actual emissions are lower than expected', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100,
       expectedCarbonIntensity: 1,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -68,7 +78,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('keeps expected-only records from becoming zero-valued actuals', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100_000,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -85,7 +95,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('marks mismatched lifecycle boundaries as not comparable', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100_000,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -106,7 +116,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('preserves historical expected values and tracks actual-only records without inventing zeros', () => {
-    const historical = calculateExpectedActualTracking({
+    const historical = track({
       expectedQuantity: 100_000,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -121,7 +131,7 @@ describe('expected vs actual carbon tracking', () => {
       actualReportingPeriod: '2026',
     });
 
-    const actualOnly = calculateExpectedActualTracking({
+    const actualOnly = track({
       expectedQuantity: undefined,
       expectedCarbonIntensity: undefined,
       actualQuantity: 100,
@@ -138,7 +148,7 @@ describe('expected vs actual carbon tracking', () => {
   });
 
   it('tags variance source as BOTH when both quantity and intensity differ', () => {
-    const result = calculateExpectedActualTracking({
+    const result = track({
       expectedQuantity: 100_000,
       expectedCarbonIntensity: 0.98,
       expectedCarbonIntensityUnit: 'kgCO2e/kg',
@@ -155,5 +165,57 @@ describe('expected vs actual carbon tracking', () => {
 
     expect(result.sourceOfVariance).toBe('BOTH');
     expect(result.status).toBe('COMPLETE');
+  });
+
+  it('converts purchase quantities and PCF denominator units before calculating emissions', () => {
+    expect(calculateCarbonEmissions(1, 'tonne', 1.42, 'kgCO2e/kg')).toBe(1420);
+    expect(calculateCarbonEmissions(1, 'tonne', 1.42, 'kgCO2e/tonne')).toBe(1.42);
+    expect(calculateCarbonEmissions(1, 'tonne', 1.42, 'kgCO2e/piece')).toBeUndefined();
+    expect(calculateCarbonEmissions(10, 'kg', 0, 'kgCO2e/kg')).toBe(0);
+  });
+
+  it('keeps zero intensity valid but does not invent a variance percentage from a zero baseline', () => {
+    const result = track({
+      expectedQuantity: 10,
+      expectedCarbonIntensity: 0,
+      expectedCarbonIntensityUnit: 'kgCO2e/kg',
+      expectedFunctionalUnit: '1 kg product',
+      expectedBoundary: 'Cradle-to-Gate',
+      expectedReportingPeriod: '2026',
+      actualQuantity: 10,
+      actualCarbonIntensity: 1,
+      actualCarbonIntensityUnit: 'kgCO2e/kg',
+      actualFunctionalUnit: '1 kg product',
+      actualBoundary: 'Cradle-to-Gate',
+      actualReportingPeriod: '2026',
+    });
+
+    expect(result.expectedEmissions).toBe(0);
+    expect(result.actualEmissions).toBe(10);
+    expect(result.variance).toBe(10);
+    expect(result.variancePercent).toBeUndefined();
+  });
+
+  it('does not compare carbon claims if methodology is unavailable', () => {
+    const result = calculateExpectedActualTracking({
+      expectedQuantity: 10,
+      expectedQuantityUnit: 'kg',
+      expectedCarbonIntensity: 1,
+      expectedCarbonIntensityUnit: 'kgCO2e/kg',
+      expectedFunctionalUnit: '1 kg product',
+      expectedBoundary: 'Cradle-to-Gate',
+      expectedReportingPeriod: '2026',
+      actualQuantity: 10,
+      actualQuantityUnit: 'kg',
+      actualCarbonIntensity: 1,
+      actualCarbonIntensityUnit: 'kgCO2e/kg',
+      actualFunctionalUnit: '1 kg product',
+      actualBoundary: 'Cradle-to-Gate',
+      actualReportingPeriod: '2026',
+    });
+
+    expect(result.status).toBe('NOT_COMPARABLE');
+    expect(result.variance).toBeUndefined();
+    expect(result.comparisonReason).toContain('methodologies');
   });
 });

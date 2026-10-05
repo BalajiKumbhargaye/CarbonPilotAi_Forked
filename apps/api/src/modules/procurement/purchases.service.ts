@@ -178,6 +178,69 @@ export class PurchasesService {
     }
   }
 
+  async createFromProcurementDocument(data: {
+    supplierId: string;
+    productId: string;
+    quantity: string;
+    unit: string;
+    unitPrice: string;
+    totalAmount: string;
+    currency: string;
+    purchaseDate: string;
+    referenceNumber: string;
+    purchaseOrderId?: string;
+    invoiceId: string;
+    status: PurchaseStatus;
+  }, customerOrganizationId: string) {
+    const { supplier, product } = await this.validateSupplierProduct(
+      data.supplierId,
+      data.productId,
+      customerOrganizationId,
+      data.unit
+    );
+    const quantity = String(data.quantity).trim();
+    this.toScaledInteger(quantity);
+    const unitPrice = this.normalizeUnitPrice(Number(data.unitPrice));
+    const totalAmount = this.normalizeImportedTotal(data.totalAmount);
+    const currency = data.currency.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new AppError('Enter a valid 3-letter currency code', 400, 'INVALID_CURRENCY');
+    try {
+      new Intl.NumberFormat('en', { style: 'currency', currency }).format(0);
+    } catch {
+      throw new AppError(`Currency ${currency} is not recognized`, 400, 'INVALID_CURRENCY');
+    }
+    const purchaseDate = new Date(data.purchaseDate);
+    if (Number.isNaN(purchaseDate.getTime())) throw new AppError('Enter a valid purchase date', 400, 'INVALID_DATE');
+    const referenceNumber = data.referenceNumber.trim();
+    if (!referenceNumber) throw new AppError('Purchase reference is required', 400, 'INVALID_REFERENCE');
+
+    try {
+      const record = await PurchaseModel.create({
+        customerOrganizationId,
+        supplierId: supplier._id,
+        supplierOrganizationId: supplier.organizationId,
+        productId: product._id,
+        quantity: Number(quantity),
+        unit: product.unit,
+        unitPrice: mongoose.Types.Decimal128.fromString(unitPrice),
+        totalAmount: mongoose.Types.Decimal128.fromString(totalAmount),
+        currency,
+        purchaseDate,
+        referenceNumber,
+        purchaseOrderId: data.purchaseOrderId,
+        invoiceId: data.invoiceId,
+        reportingPeriod: this.getReportingPeriod(purchaseDate),
+        status: data.status,
+      });
+      return this.toResponse(record);
+    } catch (error) {
+      if (this.isDuplicateKey(error)) {
+        throw new AppError('This reference number is already used for another purchase', 409, 'PURCHASE_EXISTS');
+      }
+      throw error;
+    }
+  }
+
   async update(id: string, data: Record<string, any>, customerOrganizationId: string) {
     const record = await this.getRawById(id, customerOrganizationId);
     const currentStatus = record.status as PurchaseStatus;
@@ -325,6 +388,14 @@ export class PurchasesService {
       throw new AppError('Supplier product price is invalid', 409, 'INVALID_PRODUCT_PRICE');
     }
     return normalized;
+  }
+
+  private normalizeImportedTotal(value: string) {
+    const normalized = value.trim();
+    if (!/^\d+(?:\.\d{1,2})?$/.test(normalized) || !Number.isFinite(Number(normalized))) {
+      throw new AppError('Enter a valid non-negative total amount with at most 2 decimals', 400, 'INVALID_AMOUNT');
+    }
+    return Number(normalized).toFixed(2);
   }
 
   private toScaledInteger(value: string) {

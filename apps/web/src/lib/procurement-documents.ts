@@ -28,6 +28,60 @@ export interface ProcurementReviewData {
   purchaseOrderNumber?: string;
   expectedDeliveryDate?: string;
   source?: 'MANUAL' | 'EXTRACTED';
+  items?: ProcurementReviewLineItem[];
+  validationWarnings?: string[];
+}
+
+export interface ProcurementReviewLineItem {
+  productId: string;
+  description: string;
+  productCode?: string;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  totalAmount: string;
+}
+
+export interface ProcurementExtractedData {
+  documentNumber?: string;
+  documentDate?: string;
+  supplierName?: string;
+  supplierMatchStatus: 'MATCHED' | 'NOT_FOUND' | 'MULTIPLE_MATCHES' | 'NEEDS_REVIEW';
+  matchedSupplierId?: string;
+  currency?: string;
+  purchaseOrderNumber?: string;
+  expectedDeliveryDate?: string;
+  totalAmount?: string;
+  items: Array<{
+    description?: string;
+    productCode?: string;
+    productMatchStatus: 'MATCHED' | 'NOT_FOUND' | 'MULTIPLE_MATCHES' | 'NEEDS_REVIEW';
+    matchedProductId?: string;
+    quantity?: string;
+    unit?: string;
+    unitPrice?: string;
+    totalAmount?: string;
+  }>;
+  missingFields: string[];
+  validationWarnings: string[];
+}
+
+export interface ProcurementExtraction {
+  _id: string;
+  method?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
+  status: 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  text?: string;
+  fields: Array<{
+    field: string;
+    value: string | number | boolean;
+    unit?: string;
+    confidence?: number;
+    page?: number;
+    sourceText?: string;
+  }>;
+  pages?: Array<{ pageNumber: number; text: string; method: 'NATIVE_TEXT' | 'OCR'; confidence?: number }>;
+  errorMessage?: string;
+  processedAt: string;
 }
 
 export interface ProcurementDocumentRecord {
@@ -40,17 +94,21 @@ export interface ProcurementDocumentRecord {
   uploadedAt: string;
   processingError?: string;
   reviewData?: ProcurementReviewData;
+  extractedData?: ProcurementExtractedData;
+  extraction?: ProcurementExtraction | null;
   supplierId?: string;
   supplier?: { _id: string; name: string } | null;
   invoiceId?: string;
   purchaseOrderId?: string;
   purchaseId?: string;
+  purchaseIds?: string[];
   downloadPath: string;
 }
 
 export interface ProcurementDocumentImportResult {
   document: ProcurementDocumentRecord;
   purchase: { _id: string } | null;
+  purchases: Array<{ _id: string }>;
   purchaseOrder: { _id: string } | null;
   warning: string | null;
 }

@@ -118,12 +118,14 @@ export function areComparablePcfValues(left: {
   functionalUnit?: string;
   boundary?: string;
   reportingPeriod?: string;
+  methodology?: string;
 }, right: {
   unit: string;
   functionalUnit?: string;
   boundary?: string;
   reportingPeriod?: string;
-}) {
+  methodology?: string;
+}, requireMethodology = false) {
   const leftUnit = normalizeUnitValue(1, left.unit);
   const rightUnit = normalizeUnitValue(1, right.unit);
   if (!leftUnit || !rightUnit || leftUnit.unit !== rightUnit.unit) return false;
@@ -132,5 +134,7 @@ export function areComparablePcfValues(left: {
   if (!left.functionalUnit || !right.functionalUnit || normalizeText(left.functionalUnit) !== normalizeText(right.functionalUnit)) return false;
   if (!left.boundary || !right.boundary || normalizeText(left.boundary) !== normalizeText(right.boundary)) return false;
   if (!left.reportingPeriod || !right.reportingPeriod || normalizeText(left.reportingPeriod) !== normalizeText(right.reportingPeriod)) return false;
+  if (requireMethodology && (!left.methodology || !right.methodology)) return false;
+  if ((left.methodology || right.methodology) && normalizeText(left.methodology) !== normalizeText(right.methodology)) return false;
   return true;
 }

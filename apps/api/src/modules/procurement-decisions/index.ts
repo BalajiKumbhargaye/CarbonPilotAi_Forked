@@ -38,6 +38,12 @@ type ClaimRecord = IClaimDocument | null;
 
 const usableCarbonStatuses = new Set([ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED]);
 
+function finiteNonNegativeValue(value: unknown): number | undefined {
+  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return undefined;
+  const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function normalizedText(value?: string) {
   return value?.trim().toLowerCase().replace(/\s+/g, '') || '';
 }
@@ -55,13 +61,34 @@ function productsAreCompatible(left: NonNullable<ProductRecord>, right: NonNulla
   return !!leftUnit && !!rightUnit && leftUnit.unit === rightUnit.unit;
 }
 
-function carbonDescription(product: NonNullable<ProductRecord>, claim: NonNullable<ClaimRecord>) {
+function carbonDescription(claim: NonNullable<ClaimRecord>) {
+  const rawValue = claim.value === null || claim.value === undefined || claim.value === '' ? Number.NaN : Number(claim.value);
+  const normalizedValue = claim.normalizedData?.normalizedValue;
+  const value = normalizedValue ?? rawValue;
   return {
-    value: Number(claim.normalizedData?.normalizedValue ?? claim.value),
+    value: Number.isFinite(value) && value >= 0 ? value : undefined,
     unit: claim.normalizedData?.normalizedUnit || claim.unit || '',
-    functionalUnit: claim.normalizedData?.functionalUnit || product.unit,
-    boundary: claim.normalizedData?.boundary || claim.boundary || '',
-    reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod || '',
+    functionalUnit: claim.normalizedData?.functionalUnit,
+    boundary: claim.normalizedData?.boundary || claim.boundary,
+    reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod,
+    methodology: claim.methodology,
+  };
+}
+
+function carbonSourceReference(claim: NonNullable<ClaimRecord>) {
+  const reference = claim.sourceReference;
+  if (!reference) return undefined;
+  const document = reference.documentId && typeof reference.documentId === 'object'
+    ? reference.documentId as unknown as { _id?: { toString(): string }; filename?: string }
+    : undefined;
+  return {
+    documentId: document?._id?.toString()
+      || (typeof reference.documentId === 'string' ? reference.documentId : undefined),
+    documentName: document?.filename,
+    page: reference.page,
+    sourceText: reference.sourceText,
+    sourceType: reference.sourceType,
+    extractionMethod: reference.extractionMethod,
   };
 }
 
@@ -71,6 +98,7 @@ function estimateEmissions(
   intensity: number,
   intensityUnit: string
 ) {
+  if (!Number.isFinite(quantity) || quantity < 0 || !Number.isFinite(intensity) || intensity < 0) return undefined;
   const normalizedQuantity = normalizeUnitValue(quantity, quantityUnit);
   const normalizedIntensity = normalizeCarbonData({ value: intensity, unit: intensityUnit });
   if (!normalizedQuantity || !normalizedIntensity?.normalizedUnit || normalizedIntensity.normalizedValue === undefined) {
@@ -94,6 +122,7 @@ export function calculateDecisionTradeOff(left: {
   functionalUnit?: string;
   boundary?: string;
   reportingPeriod?: string;
+  methodology?: string;
   evidenceStatus: string;
 }, right: {
   supplierId: string;
@@ -107,25 +136,29 @@ export function calculateDecisionTradeOff(left: {
   functionalUnit?: string;
   boundary?: string;
   reportingPeriod?: string;
+  methodology?: string;
   evidenceStatus: string;
 }) {
   const hasLeftCarbon = ['SUPPORTED', 'CORROBORATED'].includes(left.evidenceStatus)
-    && left.emissions !== undefined && left.intensity !== undefined && !!left.intensityUnit;
+    && Number.isFinite(left.emissions) && left.emissions! >= 0 && Number.isFinite(left.intensity) && left.intensity! >= 0 && !!left.intensityUnit;
   const hasRightCarbon = ['SUPPORTED', 'CORROBORATED'].includes(right.evidenceStatus)
-    && right.emissions !== undefined && right.intensity !== undefined && !!right.intensityUnit;
+    && Number.isFinite(right.emissions) && right.emissions! >= 0 && Number.isFinite(right.intensity) && right.intensity! >= 0 && !!right.intensityUnit;
   const comparable = hasLeftCarbon && hasRightCarbon && areComparablePcfValues(
     {
       unit: left.intensityUnit!,
       functionalUnit: left.functionalUnit,
       boundary: left.boundary,
       reportingPeriod: left.reportingPeriod,
+      methodology: left.methodology,
     },
     {
       unit: right.intensityUnit!,
       functionalUnit: right.functionalUnit,
       boundary: right.boundary,
       reportingPeriod: right.reportingPeriod,
-    }
+      methodology: right.methodology,
+    },
+    true
   );
   const carbonDifference = comparable ? Number((left.emissions! - right.emissions!).toFixed(6)) : undefined;
   const sameCurrency = !!left.currency && left.currency === right.currency;
@@ -145,6 +178,9 @@ export function calculateDecisionTradeOff(left: {
     }
     if (normalizedText(left.reportingPeriod) !== normalizedText(right.reportingPeriod)) {
       compatibilityWarnings.push('Reporting periods differ or are missing.');
+    }
+    if (normalizedText(left.methodology) !== normalizedText(right.methodology)) {
+      compatibilityWarnings.push('Methodologies differ or are missing.');
     }
   }
 
@@ -239,7 +275,7 @@ export class ProcurementDecisionService {
     const claimsPromise = ClaimModel.find({
       supplierId: { $in: supplierIds },
       productId: { $in: productIds },
-    }).sort({ createdAt: -1 });
+    }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 });
     const [purchases, allClaims] = await Promise.all([purchasePromise, claimsPromise]);
 
     const relationshipByOrganizationId = new Map(relationships.map((item) => [
@@ -275,25 +311,26 @@ export class ProcurementDecisionService {
       if (!supplier || !relationship) return undefined;
 
       const purchase = purchaseByProduct.get(candidate._id.toString());
-      const priceAvailable = !!purchase && purchase.unit === candidate.unit;
       const quantityFactor = normalizeUnitValue(quantity, baseProduct.unit);
       const candidateUnitFactor = normalizeUnitValue(1, candidate.unit);
       const candidateQuantity = quantityFactor && candidateUnitFactor && quantityFactor.unit === candidateUnitFactor.unit
         ? quantityFactor.value / candidateUnitFactor.value
         : undefined;
-      const pricePerUnit = priceAvailable && candidateQuantity !== undefined
-        ? Number(purchase!.unitPrice.toString()) * candidateQuantity / quantity
+      const currentPrice = candidate.sellingPrice;
+      const priceAvailable = currentPrice !== undefined && Number.isFinite(currentPrice) && currentPrice >= 0 && !!candidate.currency;
+      const pricePerUnit = priceAvailable && candidateQuantity !== undefined && quantity > 0
+        ? Number((currentPrice! * candidateQuantity / quantity).toFixed(6))
         : undefined;
       const totalCost = priceAvailable && candidateQuantity !== undefined
-        ? Number((Number(purchase!.unitPrice.toString()) * candidateQuantity).toFixed(2))
+        ? Number((currentPrice! * candidateQuantity).toFixed(2))
         : undefined;
 
       const canViewCarbon = relationship.sharedDataPermissions.carbon;
       const claim = canViewCarbon ? claimByProduct.get(candidate._id.toString()) : undefined;
       const evidenceStatus: ClaimStatus | 'MISSING' = claim?.status || 'MISSING';
-      const carbon = claim ? carbonDescription(candidate, claim) : undefined;
+      const carbon = claim ? carbonDescription(claim) : undefined;
       const supported = !!claim && usableCarbonStatuses.has(claim.status);
-      const emissions = supported && carbon
+      const emissions = supported && carbon?.value !== undefined && carbon.unit
         ? estimateEmissions(candidateQuantity ?? quantity, candidate.unit, carbon.value, carbon.unit)
         : undefined;
       const corroborationStatus = claim && (
@@ -307,15 +344,14 @@ export class ProcurementDecisionService {
 
       const factorAvailability = [
         priceAvailable,
-        !!claim && Number.isFinite(carbon?.value) && !!carbon?.unit,
-        !!claim,
-        true,
-        false,
+        supported && carbon?.value !== undefined && !!carbon.unit,
+        emissions !== undefined,
       ];
       const warnings: string[] = [];
-      if (!priceAvailable) warnings.push('Price is not available from prior purchases.');
+      if (!priceAvailable) warnings.push(purchase ? 'Current product price is unavailable; historical purchase pricing is not used as a current quote.' : 'Current product price is unavailable.');
       if (!claim) warnings.push(canViewCarbon ? 'Supplier has not provided a PCF claim.' : 'Carbon data is not shared with this buyer.');
       if (claim && !supported) warnings.push(`Carbon claim status is ${claim.status}; it is not used to estimate emissions.`);
+      if (supported && carbon?.value === undefined) warnings.push('Carbon claim value is missing or invalid.');
       if (claim && emissions === undefined) warnings.push('Carbon intensity is incompatible with the product quantity unit.');
       if (claim && corroborationStatus === 'NOT_AVAILABLE') warnings.push('Independent corroboration is not available.');
       warnings.push('Supplier availability is not tracked in the available procurement data.');
@@ -335,13 +371,22 @@ export class ProcurementDecisionService {
         pricePerUnit,
         priceUnit: baseProduct.unit,
         totalCost,
-        currency: priceAvailable ? purchase!.currency : undefined,
-        lastRecordedPriceDate: priceAvailable ? purchase!.purchaseDate : undefined,
+        currency: priceAvailable ? candidate.currency : undefined,
+        priceSource: priceAvailable ? 'CURRENT_PRODUCT_PRICE' as const : 'NOT_AVAILABLE' as const,
+        lastRecordedPrice: purchase && finiteNonNegativeValue(purchase.unitPrice?.toString()) !== undefined
+          ? finiteNonNegativeValue(purchase.unitPrice.toString())
+          : undefined,
+        lastRecordedPriceCurrency: purchase?.currency,
+        lastRecordedPriceUnit: purchase?.unit,
+        lastRecordedPriceDate: purchase?.purchaseDate,
         carbonIntensity: carbon?.value,
         carbonIntensityUnit: carbon?.unit,
         functionalUnit: carbon?.functionalUnit,
         lifecycleBoundary: carbon?.boundary,
         reportingPeriod: carbon?.reportingPeriod,
+        methodology: carbon?.methodology,
+        claimId: claim?._id.toString(),
+        sourceReference: claim ? carbonSourceReference(claim) : undefined,
         estimatedEmissions: emissions,
         emissionsUnit: 'kgCO2e',
         evidenceStatus,
@@ -375,6 +420,7 @@ export class ProcurementDecisionService {
           functionalUnit: left.functionalUnit,
           boundary: left.lifecycleBoundary,
           reportingPeriod: left.reportingPeriod,
+          methodology: left.methodology,
           evidenceStatus: left.evidenceStatus,
         }, {
           supplierId: right.supplierId,
@@ -388,6 +434,7 @@ export class ProcurementDecisionService {
           functionalUnit: right.functionalUnit,
           boundary: right.lifecycleBoundary,
           reportingPeriod: right.reportingPeriod,
+          methodology: right.methodology,
           evidenceStatus: right.evidenceStatus,
         }));
       }
@@ -489,12 +536,20 @@ export class ProcurementDecisionService {
         pricePerUnit: option.pricePerUnit,
         totalCost: option.totalCost,
         currency: option.currency,
+        priceSource: option.priceSource,
+        lastRecordedPrice: option.lastRecordedPrice,
+        lastRecordedPriceCurrency: option.lastRecordedPriceCurrency,
+        lastRecordedPriceUnit: option.lastRecordedPriceUnit,
+        lastRecordedPriceDate: option.lastRecordedPriceDate,
         carbonIntensity: option.carbonIntensity,
         carbonIntensityUnit: option.carbonIntensityUnit,
         estimatedEmissions: option.estimatedEmissions,
         functionalUnit: option.functionalUnit,
         lifecycleBoundary: option.lifecycleBoundary,
         reportingPeriod: option.reportingPeriod,
+        methodology: option.methodology,
+        claimId: option.claimId,
+        sourceReference: option.sourceReference,
         evidenceStatus: option.evidenceStatus,
         corroborationStatus: option.corroborationStatus,
         comparisonStatus: option.comparisonStatus,
@@ -552,12 +607,20 @@ export class ProcurementDecisionService {
       pricePerUnit: option.pricePerUnit,
       totalCost: option.totalCost,
       currency: option.currency,
+      priceSource: option.priceSource,
+      lastRecordedPrice: option.lastRecordedPrice,
+      lastRecordedPriceCurrency: option.lastRecordedPriceCurrency,
+      lastRecordedPriceUnit: option.lastRecordedPriceUnit,
+      lastRecordedPriceDate: option.lastRecordedPriceDate,
       carbonIntensity: option.carbonIntensity,
       carbonIntensityUnit: option.carbonIntensityUnit,
       estimatedEmissions: option.estimatedEmissions,
       functionalUnit: option.functionalUnit,
       lifecycleBoundary: option.lifecycleBoundary,
       reportingPeriod: option.reportingPeriod,
+      methodology: option.methodology,
+      claimId: option.claimId,
+      sourceReference: option.sourceReference,
       evidenceStatus: option.evidenceStatus,
       corroborationStatus: option.corroborationStatus,
       comparisonStatus: option.comparisonStatus,
@@ -612,9 +675,17 @@ export class ProcurementDecisionService {
       pricePerUnit: option.pricePerUnit,
       totalCost: option.totalCost,
       currency: option.currency,
+      priceSource: option.priceSource,
+      lastRecordedPrice: option.lastRecordedPrice,
+      lastRecordedPriceCurrency: option.lastRecordedPriceCurrency,
+      lastRecordedPriceUnit: option.lastRecordedPriceUnit,
+      lastRecordedPriceDate: option.lastRecordedPriceDate,
       carbonIntensity: option.carbonIntensity,
       carbonIntensityUnit: option.carbonIntensityUnit,
       estimatedEmissions: option.estimatedEmissions,
+      methodology: option.methodology,
+      claimId: option.claimId,
+      sourceReference: option.sourceReference,
       evidenceStatus: option.evidenceStatus,
       corroborationStatus: option.corroborationStatus,
       comparisonStatus: option.comparisonStatus,

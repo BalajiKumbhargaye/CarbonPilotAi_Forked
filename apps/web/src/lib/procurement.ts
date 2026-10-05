@@ -75,6 +75,7 @@ export interface InvoiceRecord {
   totalAmount: number;
   items: Array<{ description: string; quantity: number; unit: string; unitPrice: number; totalPrice: number }>;
   supplierOrganizationId: string | ProcurementParty;
+  documentId?: string;
   extractionStatus: string;
 }
 
@@ -86,6 +87,7 @@ export interface PurchaseOrderRecord {
   totalAmount: number;
   items: Array<{ description: string; quantity: number; unit: string; unitPrice: number; totalPrice: number }>;
   supplierOrganizationId: string | ProcurementParty;
+  documentId?: string;
   status: string;
 }
 
@@ -132,24 +134,33 @@ export interface PurchaseCarbonTrackingRecord {
   product: { _id: string; name: string; productCode?: string; category: string; unit: string };
   expected: {
     quantity?: number;
+    quantityUnit?: string;
     carbonIntensity?: number;
     carbonIntensityUnit?: string;
     functionalUnit?: string;
     lifecycleBoundary?: string;
     reportingPeriod?: string;
+    methodology?: string;
     evidenceStatus?: string;
     carbonDataSource?: string;
+    claimId?: string;
+    sourceReference?: { documentId?: string; documentName?: string; page?: number; sourceText?: string; extractionMethod?: string };
     emissions?: number;
   };
   actual: {
     quantity?: number;
+    quantityUnit?: string;
     carbonIntensity?: number;
     carbonIntensityUnit?: string;
     functionalUnit?: string;
     lifecycleBoundary?: string;
     reportingPeriod?: string;
+    methodology?: string;
     evidenceStatus?: string;
     carbonDataSource?: string;
+    factorSource?: string;
+    calculationId?: string;
+    sourceReference?: { documentId?: string; documentName?: string; page?: number; sourceText?: string; extractionMethod?: string };
     emissions?: number;
     calculationVersion?: number;
   };
@@ -166,7 +177,7 @@ export function getPurchaseCarbonTracking(id: string) {
 }
 
 export function getCarbonTrackingDashboard() {
-  return apiFetch<{ summary: Record<string, number>; purchases: PurchaseCarbonTrackingRecord[] }>('/api/carbon/tracking', {}, getToken());
+  return apiFetch<{ summary: Record<string, number | null>; purchases: PurchaseCarbonTrackingRecord[] }>('/api/carbon/tracking', {}, getToken());
 }
 
 export function getPurchaseSummary() {

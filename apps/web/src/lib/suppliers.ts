@@ -155,14 +155,16 @@ export interface SupplierComparisonRow {
   functionalUnit?: string;
   lifecycleBoundary?: string;
   reportingPeriod?: string;
+  methodology?: string;
+  sourceReference?: { documentId?: string; documentName?: string; page?: number; sourceText?: string; extractionMethod?: string };
   evidenceStatus?: string;
   corroborationStatus?: string;
   carbonStatus?: string;
   dataCompleteness: { requested: number; completed: number; percentage: number };
   certificate?: { type?: string; issuer?: string; status?: string; issueDate?: string; expiryDate?: string } | null;
-  purchaseHistory: { count: number; totalQuantity: number; lastPurchaseDate?: string | null; lastPrice?: number | null; currency?: string | null };
+  purchaseHistory: { count: number; totalQuantity: number | null; totalQuantityUnit?: string | null; lastPurchaseDate?: string | null; lastPrice?: number | null; currency?: string | null };
   warnings: string[];
-  comparableCarbon?: { value: number; unit: string; functionalUnit?: string; boundary?: string; reportingPeriod?: string } | null;
+  comparableCarbon?: { value: number; unit: string; functionalUnit?: string; boundary?: string; reportingPeriod?: string; methodology?: string } | null;
 }
 
 export interface SupplierComparisonResult {
@@ -176,6 +178,7 @@ export interface SupplierComparisonResult {
     lowestCost: number;
     comparisonSupplier: string | null;
     costDifference: number;
+    currency?: string;
     emissionDifference: number;
     costPerEstimatedTonneAvoided?: number;
   };

@@ -243,20 +243,22 @@ export default function ProcurementDecisionsPage() {
                     <p className="mt-1 text-xs text-emerald-700">Product compatibility confirmed</p>
                   </td>
                   <td className="px-4 py-4 text-slate-700 dark:text-slate-300">
-                    {formatMoney(option.pricePerUnit, option.currency)} / {option.priceUnit}
-                    {option.lastRecordedPriceDate && <span className="mt-1 block text-xs text-slate-500">Historical purchase price · {new Date(option.lastRecordedPriceDate).toLocaleDateString()}</span>}
+                    {option.priceSource === 'CURRENT_PRODUCT_PRICE' ? `${formatMoney(option.pricePerUnit, option.currency)} / ${option.priceUnit}` : 'Current product price unavailable'}
+                    {option.lastRecordedPrice != null && <span className="mt-1 block text-xs text-slate-500">Last recorded purchase: {formatMoney(option.lastRecordedPrice, option.lastRecordedPriceCurrency)} / {option.lastRecordedPriceUnit || 'unit unavailable'}{option.lastRecordedPriceDate ? ` · ${new Date(option.lastRecordedPriceDate).toLocaleDateString()}` : ''}</span>}
                   </td>
                   <td className="px-4 py-4 font-medium text-slate-900 dark:text-slate-100">{formatMoney(option.totalCost, option.currency)}</td>
                   <td className="px-4 py-4 text-slate-700 dark:text-slate-300">
                     {option.carbonIntensity === undefined ? 'Not available' : `${formatNumber(option.carbonIntensity, 4)} ${option.carbonIntensityUnit}`}
                     {option.reportingPeriod && <span className="mt-1 block text-xs text-slate-500">{option.reportingPeriod} · {option.lifecycleBoundary || 'Boundary unavailable'}</span>}
+                    {option.methodology && <span className="mt-1 block text-xs text-slate-500">{option.methodology}</span>}
+                    {option.sourceReference && <span className="mt-1 block text-xs text-slate-500">{option.sourceReference.documentName || 'Source document'}{option.sourceReference.page ? ` · page ${option.sourceReference.page}` : ''}{option.sourceReference.extractionMethod ? ` · ${option.sourceReference.extractionMethod}` : ''}</span>}
                   </td>
                   <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{option.estimatedEmissions === undefined ? 'Not available' : `${formatNumber(option.estimatedEmissions)} ${option.emissionsUnit}`}</td>
                   <td className="px-4 py-4 text-slate-700 dark:text-slate-300">
                     {statusLabel(option.evidenceStatus)}<span className="mt-1 block text-xs text-slate-500">Corroboration: {statusLabel(option.corroborationStatus)}</span>
                     {option.warnings.map((warning) => <span key={warning} className="mt-1 block max-w-64 text-xs text-amber-800 dark:text-amber-300">{warning}</span>)}
                   </td>
-                  <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{option.dataCompleteness.available}/{option.dataCompleteness.total} factors</td>
+                  <td className="px-4 py-4 text-slate-700 dark:text-slate-300">{option.dataCompleteness.available}/{option.dataCompleteness.total} data points</td>
                   <td className="px-4 py-4"><input aria-label={`Select ${option.supplierName}`} type="radio" name="decision-option" checked={selectedOption === optionKey} onChange={() => setSelectedOption(optionKey)} /></td>
                 </tr>;
               })}

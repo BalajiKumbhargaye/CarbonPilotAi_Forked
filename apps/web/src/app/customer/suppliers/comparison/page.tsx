@@ -145,7 +145,7 @@ export default function SupplierComparisonPage() {
                 <thead className="bg-slate-50 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
                   <tr>
                     <th className="px-4 py-3 font-medium">Supplier</th>
-                    <th className="px-4 py-3 font-medium">Price / unit</th>
+                    <th className="px-4 py-3 font-medium">Current price / unit</th>
                     <th className="px-4 py-3 font-medium">Carbon intensity</th>
                     <th className="px-4 py-3 font-medium">Evidence</th>
                     <th className="px-4 py-3 font-medium">Data completeness</th>
@@ -159,8 +159,18 @@ export default function SupplierComparisonPage() {
                         <div className="font-medium text-slate-900 dark:text-slate-100">{supplier.supplierName}</div>
                         <div className="text-xs text-slate-500">{supplier.productName}</div>
                       </td>
-                      <td className="px-4 py-3 align-top">{supplier.pricePerUnit != null ? `${supplier.currency || 'USD'} ${supplier.pricePerUnit.toFixed(2)}` : 'No price'} </td>
-                      <td className="px-4 py-3 align-top">{supplier.carbonIntensity != null ? `${supplier.carbonIntensity.toFixed(2)} ${supplier.carbonUnit || 'Unit unavailable'}` : 'No carbon data'}</td>
+                      <td className="px-4 py-3 align-top">
+                        {supplier.pricePerUnit != null ? `${supplier.currency || 'Currency unavailable'} ${supplier.pricePerUnit.toFixed(2)}` : 'Current price unavailable'}
+                        {supplier.purchaseHistory.lastPrice != null && <div className="mt-1 text-xs text-slate-500">Last recorded: {supplier.purchaseHistory.currency || 'Currency unavailable'} {supplier.purchaseHistory.lastPrice.toFixed(2)}{supplier.purchaseHistory.lastPurchaseDate ? ` · ${new Date(supplier.purchaseHistory.lastPurchaseDate).toLocaleDateString()}` : ''}</div>}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        {supplier.carbonStatus === 'AVAILABLE' && supplier.carbonIntensity != null
+                          ? `${supplier.carbonIntensity.toFixed(2)} ${supplier.carbonUnit || 'Unit unavailable'}`
+                          : supplier.carbonIntensity != null
+                            ? `Reported, not used: ${supplier.carbonIntensity.toFixed(2)} ${supplier.carbonUnit || 'Unit unavailable'}`
+                            : 'No carbon data'}
+                        {supplier.sourceReference && <div className="mt-1 text-xs text-slate-500">{supplier.sourceReference.documentName || 'Source document'}{supplier.sourceReference.page ? ` · page ${supplier.sourceReference.page}` : ''}{supplier.sourceReference.extractionMethod ? ` · ${supplier.sourceReference.extractionMethod}` : ''}</div>}
+                      </td>
                       <td className="px-4 py-3 align-top text-xs">
                         <div className="font-medium">{supplier.evidenceStatus || 'NOT_AVAILABLE'}</div>
                         <div className="text-slate-500">{supplier.corroborationStatus || 'Not available'}</div>
@@ -187,7 +197,7 @@ export default function SupplierComparisonPage() {
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-3">
                 <div><div className="text-xs uppercase tracking-wide text-slate-500">Lowest cost</div><div className="mt-1 font-medium">{result.tradeOff.cheapestSupplier}</div></div>
-                <div><div className="text-xs uppercase tracking-wide text-slate-500">Cost difference</div><div className="mt-1 font-medium">{result.tradeOff.costDifference.toFixed(2)}</div></div>
+                <div><div className="text-xs uppercase tracking-wide text-slate-500">Cost difference</div><div className="mt-1 font-medium">{result.tradeOff.currency || 'Currency unavailable'} {result.tradeOff.costDifference.toFixed(2)}</div></div>
                 <div><div className="text-xs uppercase tracking-wide text-slate-500">Emissions difference</div><div className="mt-1 font-medium">{result.tradeOff.emissionDifference.toFixed(2)} kgCO2e</div></div>
               </CardContent>
             </Card>

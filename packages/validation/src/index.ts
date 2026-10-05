@@ -237,18 +237,37 @@ const procurementMoney = z.union([
   z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/, 'Enter a valid currency amount'),
 ]).transform(String);
 
+const procurementReviewLineItemSchema = z.object({
+  productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
+  description: z.string().trim().min(1).max(500),
+  productCode: z.string().trim().max(100).optional(),
+  quantity: procurementDecimal.refine((value) => Number(value) > 0, 'Quantity must be greater than 0'),
+  unit: z.enum(PRODUCT_UNITS, { errorMap: () => ({ message: 'Choose a supported product unit' }) }),
+  unitPrice: procurementDecimal.refine((value) => Number(value) >= 0, 'Unit price cannot be negative'),
+  totalAmount: procurementMoney.refine((value) => Number(value) >= 0, 'Line total cannot be negative'),
+});
+
+const validProcurementDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
+
 export const procurementDocumentReviewSchema = z.object({
   supplierId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid supplier'),
   productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
   documentNumber: z.string().trim().min(1).max(100),
-  documentDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid document date'),
+  documentDate: z.string().refine(validProcurementDate, 'Enter a valid document date in YYYY-MM-DD format'),
   quantity: procurementDecimal.refine((value) => Number(value) > 0, 'Quantity must be greater than 0'),
-  unit: z.string().trim().min(1).max(40),
+  unit: z.enum(PRODUCT_UNITS, { errorMap: () => ({ message: 'Choose a supported product unit' }) }),
   unitPrice: procurementDecimal.refine((value) => Number(value) >= 0, 'Unit price cannot be negative'),
   totalAmount: procurementMoney.refine((value) => Number(value) >= 0, 'Total cannot be negative'),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter code'),
   purchaseOrderNumber: z.string().trim().max(100).optional(),
-  expectedDeliveryDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid expected delivery date').optional(),
+  expectedDeliveryDate: z.string().refine(validProcurementDate, 'Enter a valid expected delivery date in YYYY-MM-DD format').optional(),
+  source: z.enum(['MANUAL', 'EXTRACTED']).optional(),
+  items: z.array(procurementReviewLineItemSchema).min(1).max(100).optional(),
 });
 
 /**

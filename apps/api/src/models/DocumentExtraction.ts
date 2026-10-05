@@ -53,7 +53,6 @@ const DocumentExtractionSchema = new Schema<IDocumentExtractionDocument>(
     method: {
       type: String,
       enum: ['NATIVE_TEXT', 'OCR', 'NATIVE_TEXT_AND_OCR'],
-      default: 'NATIVE_TEXT',
     },
     text: { type: String },
     pages: { type: [ExtractionPageSchema], default: [] },

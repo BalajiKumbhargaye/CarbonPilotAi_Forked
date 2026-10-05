@@ -14,20 +14,19 @@ const periodOptions = [
   })),
 ];
 
-function formatNumber(value: number | undefined, digits = 0) {
+function formatNumber(value: number | null | undefined, digits = 0) {
   if (!Number.isFinite(value ?? NaN)) return '—';
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value ?? 0);
 }
 
-function formatEmissions(value: number | undefined) {
+function formatEmissions(value: number | null | undefined) {
   if (!Number.isFinite(value ?? NaN)) return '—';
   return `${formatNumber(value, 2)} kgCO2e`;
 }
 
 function formatProcurementTotals(report: ProcurementCarbonReportResponse | null) {
   const totals = report?.summary.totalProcurementValueByCurrency;
-  if (!totals?.length) return '—';
-  return totals.map(({ currency, amount }) => {
+  const formattedTotals = totals?.map(({ currency, amount }) => {
     if (currency === 'UNKNOWN') return `Currency unavailable ${formatNumber(amount, 2)}`;
     try {
       return new Intl.NumberFormat(undefined, {
@@ -38,7 +37,10 @@ function formatProcurementTotals(report: ProcurementCarbonReportResponse | null)
     } catch {
       return `${currency} ${formatNumber(amount, 2)}`;
     }
-  }).join(' · ');
+  }) || [];
+  const unavailable = report?.summary.unavailableProcurementValueCount || 0;
+  if (unavailable) formattedTotals.push(`${unavailable} value${unavailable === 1 ? '' : 's'} unavailable`);
+  return formattedTotals.length ? formattedTotals.join(' · ') : 'Not available';
 }
 
 function StatCard({ label, value }: { label: string; value: string }) {
@@ -80,13 +82,20 @@ export default function CustomerReportsPage() {
 
   const sections = useMemo(() => [
     { label: 'Total purchases', value: formatNumber(report?.summary.totalPurchases) },
-    { label: 'Total quantity', value: formatNumber(report?.summary.totalProcurementQuantity) },
+    {
+      label: 'Total quantity',
+      value: report?.summary.totalProcurementQuantityByUnit.length
+        ? report.summary.totalProcurementQuantityByUnit
+          .map(({ quantity, unit }) => `${formatNumber(quantity)} ${unit}`)
+          .join(' · ')
+        : 'Not available',
+    },
     { label: 'Suppliers', value: formatNumber(report?.summary.suppliersCount) },
     { label: 'Products', value: formatNumber(report?.summary.productsCount) },
     { label: 'Procurement value', value: formatProcurementTotals(report) },
-    { label: 'Expected emissions', value: formatEmissions(report?.summary.totalExpectedEmissions) },
-    { label: 'Actual emissions', value: formatEmissions(report?.summary.totalActualEmissions) },
-    { label: 'Variance', value: formatEmissions(report?.summary.totalVariance) },
+    { label: 'Expected procurement emissions', value: formatEmissions(report?.summary.totalExpectedEmissions) },
+    { label: 'Calculated procurement emissions', value: formatEmissions(report?.summary.totalActualEmissions) },
+    { label: 'Comparable-record variance', value: formatEmissions(report?.summary.totalVariance) },
     { label: 'With carbon data', value: formatNumber(report?.summary.purchasesWithCarbonData) },
     { label: 'Without carbon data', value: formatNumber(report?.summary.purchasesWithoutCarbonData) },
     { label: 'Not comparable', value: formatNumber(report?.summary.purchasesNotComparable) },
@@ -98,6 +107,7 @@ export default function CustomerReportsPage() {
         <div>
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-emerald-700">Reporting</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-900 dark:text-slate-100">Procurement Carbon &amp; Sustainability Reporting</h1>
+          <p className="mt-1 max-w-3xl text-sm text-slate-500">Emissions are calculated from procurement quantities and eligible carbon-intensity data, not directly measured. Roll-up totals are shown only when the included records share a complete carbon basis.</p>
         </div>
         <label className="flex flex-col text-sm font-medium text-slate-700 dark:text-slate-300">
           Reporting period
@@ -171,7 +181,7 @@ export default function CustomerReportsPage() {
                     <th className="px-3 py-2 font-medium">Supplier</th>
                     <th className="px-3 py-2 font-medium">Product</th>
                     <th className="px-3 py-2 font-medium">Expected</th>
-                    <th className="px-3 py-2 font-medium">Actual</th>
+                    <th className="px-3 py-2 font-medium">Calculated</th>
                     <th className="px-3 py-2 font-medium">Variance</th>
                     <th className="px-3 py-2 font-medium">Status</th>
                   </tr>
@@ -186,10 +196,13 @@ export default function CustomerReportsPage() {
                         </td>
                         <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.supplier.name}</td>
                         <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.product.name}</td>
-                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.expected.emissions != null ? formatEmissions(purchase.expected.emissions) : 'N/A'}</td>
-                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.actual.emissions != null ? formatEmissions(purchase.actual.emissions) : 'N/A'}</td>
-                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.variance != null ? formatEmissions(purchase.variance) : 'N/A'}</td>
-                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.status}</td>
+                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.expected.emissions != null ? formatEmissions(purchase.expected.emissions) : 'Not available'}</td>
+                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.actual.emissions != null ? formatEmissions(purchase.actual.emissions) : 'Not available'}</td>
+                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">{purchase.variance != null ? formatEmissions(purchase.variance) : 'Not comparable'}</td>
+                        <td className="px-3 py-3 text-slate-700 dark:text-slate-300">
+                          <div>{purchase.status}</div>
+                          <div className="mt-1 text-xs text-slate-500">{purchase.expected.methodology || purchase.actual.methodology || 'Methodology unavailable'} · {purchase.expected.lifecycleBoundary || purchase.actual.lifecycleBoundary || 'Boundary unavailable'} · {purchase.expected.reportingPeriod || purchase.actual.reportingPeriod || 'Reporting period unavailable'}</div>
+                        </td>
                       </tr>
                     ))
                   ) : (

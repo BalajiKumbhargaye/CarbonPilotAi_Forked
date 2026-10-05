@@ -210,6 +210,7 @@ export function VerificationDashboard() {
       ) : claims.map((claim) => {
         const run = runs[claim._id];
         const claimIssues = issues.filter((issue) => issue.claimId === claim._id);
+        const verificationChecks = run?.checks ?? [];
         return (
           <Card key={claim._id} className="space-y-4 p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -252,7 +253,15 @@ export function VerificationDashboard() {
               {(extractions[claim._id] ?? []).length ? (extractions[claim._id] ?? []).map(({ documentId, filename, extraction }) => (
                 <div key={documentId} className="rounded-md bg-slate-50 p-3">
                   <p className="text-xs font-semibold text-slate-700">{filename}</p>
-                  {extraction.fields.map((field, index) => (
+                  {extraction.status === 'FAILED' && (
+                    <p className="mt-2 text-sm text-rose-700">
+                      Extraction failed{extraction.errorMessage ? `: ${extraction.errorMessage}` : '.'}
+                    </p>
+                  )}
+                  {(extraction.fields ?? []).length === 0 && (
+                    <p className="mt-2 text-sm text-slate-600">No structured fields were extracted from this document.</p>
+                  )}
+                  {(extraction.fields ?? []).map((field, index) => (
                     <div key={`${field.field}-${index}`} className="mt-2 border-t border-slate-200 pt-2 text-sm">
                       <p className="font-medium text-slate-900">{field.field}: {String(field.value)}{field.unit ? ` ${field.unit}` : ''}</p>
                       <p className="text-xs text-slate-600">
@@ -293,7 +302,10 @@ export function VerificationDashboard() {
             {run && (
               <div className="space-y-3 rounded-md bg-slate-50 p-4">
                 <p className="text-sm font-semibold text-slate-900">Latest result: {statusLabel(run.overallStatus)}</p>
-                {run.checks.map((check, index) => (
+                {verificationChecks.length === 0 && (
+                  <p className="text-sm text-slate-600">No verification checks were recorded for this run.</p>
+                )}
+                {verificationChecks.map((check, index) => (
                   <p key={`${check.checkType}-${index}`} className="text-sm text-slate-700">
                     <span className="font-medium">{check.result}: {check.checkType.replaceAll('_', ' ')}</span> · {check.explanation}
                     {check.sourcePage ? ` (page ${check.sourcePage})` : ''}

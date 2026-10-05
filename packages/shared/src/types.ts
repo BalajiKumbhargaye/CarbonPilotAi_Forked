@@ -256,13 +256,17 @@ export interface IDocument {
   fileUrl: string;
   mimeType: string;
   fileSize: number;
+  contentHash?: string;
   reportingPeriod?: string;
   status: DocumentStatus;
   processingError?: string;
   reviewData?: IProcurementReviewData;
+  extractedData?: IProcurementExtractedData;
+  extraction?: IDocumentExtraction | null;
   invoiceId?: string;
   purchaseOrderId?: string;
   purchaseId?: string;
+  purchaseIds?: string[];
   dataRequestId?: string;
   requestedItemId?: string;
   reviewedBy?: string;
@@ -284,6 +288,44 @@ export interface IProcurementReviewData {
   purchaseOrderNumber?: string;
   expectedDeliveryDate?: string | Date;
   source: 'MANUAL' | 'EXTRACTED';
+  items?: IProcurementReviewLineItem[];
+  validationWarnings?: string[];
+}
+
+export interface IProcurementReviewLineItem {
+  productId: string;
+  description: string;
+  productCode?: string;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  totalAmount: string;
+}
+
+export interface IProcurementExtractedLineItem {
+  description?: string;
+  productCode?: string;
+  productMatchStatus: 'MATCHED' | 'NOT_FOUND' | 'MULTIPLE_MATCHES' | 'NEEDS_REVIEW';
+  matchedProductId?: string;
+  quantity?: string;
+  unit?: string;
+  unitPrice?: string;
+  totalAmount?: string;
+}
+
+export interface IProcurementExtractedData {
+  documentNumber?: string;
+  documentDate?: string;
+  supplierName?: string;
+  supplierMatchStatus: 'MATCHED' | 'NOT_FOUND' | 'MULTIPLE_MATCHES' | 'NEEDS_REVIEW';
+  matchedSupplierId?: string;
+  currency?: string;
+  purchaseOrderNumber?: string;
+  expectedDeliveryDate?: string;
+  totalAmount?: string;
+  items: IProcurementExtractedLineItem[];
+  missingFields: string[];
+  validationWarnings: string[];
 }
 
 export interface IExtractionField {
@@ -551,7 +593,7 @@ export interface ICarbonFactor {
   region: string;
   year: number;
   source: string; // e.g. DEFRA, Ecoinvent, IEA
-  methodology: string;
+  methodology?: string;
   version: string;
   createdAt: string | Date;
 }
@@ -568,21 +610,29 @@ export interface ICarbonCalculation {
   inputQuantity?: number;
   quantityUnit: string;
   inputUnit?: string;
-  carbonFactor: number;
-  carbonFactorUnit: string;
+  carbonFactor?: number;
+  carbonFactorUnit?: string;
   normalizedCarbonIntensity?: number;
   normalizedUnit?: string;
   functionalUnit?: string;
   lifecycleBoundary?: string;
   reportingPeriod?: string;
   factorSource: string;
-  methodology: string;
-  totalEmissions: number;
+  methodology?: string;
+  totalEmissions?: number;
   calculatedEmissions?: number;
   emissionsUnit: string; // kgCO2e or tCO2e
   status?: string;
   evidenceStatus: ClaimStatus;
   claimId?: string;
+  sourceReference?: {
+    documentId?: string;
+    documentName?: string;
+    page?: number;
+    sourceText?: string;
+    sourceType?: 'DOCUMENT_EXTRACTION' | 'QUESTIONNAIRE';
+    extractionMethod?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
+  };
   reason?: string;
   calculationVersion?: number;
   calculatedAt: string | Date;
@@ -598,12 +648,20 @@ export interface IProcurementDecisionOptionSnapshot {
   pricePerUnit?: number;
   totalCost?: number;
   currency?: string;
+  priceSource?: 'CURRENT_PRODUCT_PRICE' | 'NOT_AVAILABLE';
+  lastRecordedPrice?: number;
+  lastRecordedPriceCurrency?: string;
+  lastRecordedPriceUnit?: string;
+  lastRecordedPriceDate?: string | Date;
   carbonIntensity?: number;
   carbonIntensityUnit?: string;
   estimatedEmissions?: number;
   functionalUnit?: string;
   lifecycleBoundary?: string;
   reportingPeriod?: string;
+  methodology?: string;
+  claimId?: string;
+  sourceReference?: ICarbonCalculation['sourceReference'];
   evidenceStatus: ClaimStatus | 'MISSING';
   corroborationStatus: 'CORROBORATED' | 'NOT_AVAILABLE';
   comparisonStatus: 'COMPARABLE' | 'NOT_DIRECTLY_COMPARABLE' | 'NOT_AVAILABLE';

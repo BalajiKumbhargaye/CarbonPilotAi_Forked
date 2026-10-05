@@ -10,6 +10,7 @@ import {
   DataRequestModel,
   DocumentExtractionModel,
   DocumentModel,
+  InvoiceModel,
   OrganizationMemberModel,
   OrganizationModel,
   ProductModel,
@@ -19,8 +20,10 @@ import {
   UserModel,
   VerificationRunModel,
 } from '../src/models';
-import { OrganizationType, UserRole } from '@carbonpilot/shared';
+import { DocumentType, OrganizationType, UserRole } from '@carbonpilot/shared';
 import { dataRequestsService } from '../src/modules/data-requests';
+import { procurementDocumentsService } from '../src/modules/procurement-documents';
+import { procurementDecisionService } from '../src/modules/procurement-decisions';
 import { carbonService } from '../src/modules/carbon';
 import { verificationService } from '../src/modules/verification';
 import { AuthUserPayload } from '../src/middleware/auth.middleware';
@@ -74,8 +77,9 @@ describe('real scanned Data Request document pipeline', () => {
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = '#111111';
-    context.font = 'bold 58px Arial';
-    lines.forEach((line, index) => context.fillText(line, 90, 120 + index * 112));
+    context.font = lines.length > 8 ? 'bold 48px Arial' : 'bold 58px Arial';
+    const lineSpacing = Math.min(112, 850 / Math.max(lines.length - 1, 1));
+    lines.forEach((line, index) => context.fillText(line, 90, 120 + index * lineSpacing));
     const image = canvas.toBuffer('image/jpeg', 95);
     const pageContent = Buffer.from('q 1200 0 0 550 0 0 cm /Im0 Do Q', 'ascii');
     const objects: Buffer[] = [
@@ -279,6 +283,87 @@ describe('real scanned Data Request document pipeline', () => {
     });
     expect(calculation.status).toBe('CALCULATED');
     expect(calculation.totalEmissions).toBe(1420);
+    expect(calculation.sourceReference).toMatchObject({
+      documentId: document?._id,
+      page: 1,
+      sourceType: 'DOCUMENT_EXTRACTION',
+      extractionMethod: 'OCR',
+    });
+
+    const carbonTracking = await carbonService.getPurchaseCarbonTracking(purchase._id.toString(), buyer);
+    expect(carbonTracking.actual).toMatchObject({
+      carbonIntensity: 1.42,
+      carbonIntensityUnit: 'kgCO2e/kg',
+      sourceReference: {
+        documentId: document?._id.toString(),
+        documentName: 'scanned-pcf.pdf',
+        page: 1,
+        extractionMethod: 'OCR',
+      },
+    });
+
+    const tonnePurchase = await PurchaseModel.create({
+      customerOrganizationId: buyerOrganizationId,
+      supplierOrganizationId,
+      supplierId,
+      productId,
+      quantity: 1,
+      unit: 'tonne',
+      unitPrice: 72_000,
+      totalAmount: 72_000,
+      currency: 'INR',
+      purchaseDate: new Date('2025-01-02'),
+      reportingPeriod: '2025',
+      status: 'CONFIRMED',
+    });
+    const tonneCalculation = await carbonService.calculatePurchaseEmissions({
+      purchaseId: tonnePurchase._id.toString(),
+      customerOrgId: buyerOrganizationId,
+    });
+    expect(tonneCalculation.status).toBe('CALCULATED');
+    expect(tonneCalculation.totalEmissions).toBe(1420);
+
+    const otherBuyer = await OrganizationModel.create({
+      name: 'Another Buyer Ltd',
+      type: OrganizationType.CUSTOMER,
+    });
+    await expect(carbonService.calculatePurchaseEmissions({
+      purchaseId: purchase._id.toString(),
+      customerOrgId: otherBuyer._id.toString(),
+    })).rejects.toMatchObject({ statusCode: 403 });
+
+    const unrelatedProduct = await ProductModel.create({
+      supplierId,
+      name: 'Unrelated Steel Coil',
+      category: 'Steel',
+      unit: 'kg',
+      status: 'ACTIVE',
+    });
+    const unrelatedClaim = await ClaimModel.create({
+      supplierId,
+      buyerOrganizationId,
+      productId: unrelatedProduct._id,
+      type: 'PCF_VALUE',
+      value: 1.42,
+      unit: 'kgCO2e/kg',
+      status: 'SUPPORTED',
+    });
+    await expect(carbonService.calculatePurchaseEmissions({
+      purchaseId: purchase._id.toString(),
+      claimId: unrelatedClaim._id.toString(),
+      customerOrgId: buyerOrganizationId,
+    })).rejects.toMatchObject({ statusCode: 403 });
+
+    await ProductModel.updateOne({ _id: productId }, { $set: { sellingPrice: 85, currency: 'INR' } });
+    const scenario = await procurementDecisionService.createScenario(productId, 1000, buyer, false);
+    const currentProductOption = scenario.options.find((option) => option.productId === productId);
+    expect(currentProductOption).toMatchObject({
+      priceSource: 'CURRENT_PRODUCT_PRICE',
+      pricePerUnit: 85,
+      lastRecordedPrice: 72_000,
+      lastRecordedPriceCurrency: 'INR',
+      lastRecordedPriceUnit: 'tonne',
+    });
 
     const unverifiedProduct = await ProductModel.create({
       supplierId,
@@ -341,6 +426,95 @@ describe('real scanned Data Request document pipeline', () => {
     expect(await ClaimModel.countDocuments({ dataRequestId: requestId, type: 'PCF_VALUE', value: 1.42 })).toBe(1);
     expect(await CarbonCalculationModel.countDocuments({ purchaseId: purchase._id })).toBe(1);
   }, 30000);
+
+  it('runs the real scanned invoice OCR through review and imports historical procurement prices with a source link', async () => {
+    const buffer = createScannedPcf([
+      'INVOICE NUMBER: INV-REAL-501',
+      'INVOICE DATE: 2025-09-15',
+      'SUPPLIER: ABC Steel Industries',
+      'CURRENCY: INR',
+      'PRODUCT: Steel Sheet',
+      'PRODUCT CODE: ST-001',
+      'QUANTITY: 100 kg',
+      'UNIT PRICE: 72',
+      'LINE TOTAL: 7200',
+      'INVOICE TOTAL: 7200',
+    ]);
+    const uploaded = await procurementDocumentsService.uploadDocument({
+      file: {
+        originalname: 'scanned-invoice.pdf',
+        mimetype: 'application/pdf',
+        size: buffer.length,
+        buffer,
+      } as Express.Multer.File,
+      customerOrganizationId: buyerOrganizationId,
+      userId: buyerUserId,
+      supplierId,
+      type: DocumentType.INVOICE,
+    });
+
+    const extracted = await procurementDocumentsService.process(uploaded._id, buyerOrganizationId);
+    expect(extracted.status).toBe('EXTRACTED');
+    expect(extracted.extraction).toMatchObject({ method: 'OCR', status: 'SUCCESS' });
+    expect(extracted.extractedData).toMatchObject({
+      documentNumber: 'INV-REAL-501',
+      documentDate: '2025-09-15',
+      currency: 'INR',
+      supplierMatchStatus: 'MATCHED',
+      matchedSupplierId: supplierId,
+      items: [{
+        description: 'Steel Sheet',
+        productCode: 'ST-001',
+        productMatchStatus: 'MATCHED',
+        matchedProductId: productId,
+        quantity: '100',
+        unit: 'kg',
+        unitPrice: '72',
+        totalAmount: '7200',
+      }],
+    });
+
+    const reviewed = await procurementDocumentsService.saveReview(uploaded._id, buyerOrganizationId, buyerUserId, {
+      supplierId,
+      productId,
+      documentNumber: 'INV-REAL-501',
+      documentDate: '2025-09-15',
+      quantity: '100',
+      unit: 'kg',
+      unitPrice: '72',
+      totalAmount: '7200',
+      currency: 'INR',
+      source: 'EXTRACTED',
+      items: [{
+        productId,
+        description: 'Steel Sheet',
+        productCode: 'ST-001',
+        quantity: '100',
+        unit: 'kg',
+        unitPrice: '72',
+        totalAmount: '7200',
+      }],
+    });
+    expect(reviewed.status).toBe('NEEDS_REVIEW');
+
+    const imported = await procurementDocumentsService.importDocument(uploaded._id, buyerOrganizationId, buyerUserId);
+    const invoice = await InvoiceModel.findById(imported.document.invoiceId);
+    const purchase = await PurchaseModel.findById(imported.document.purchaseId);
+    const buyerResult = await procurementDocumentsService.getById(uploaded._id, buyerOrganizationId);
+    expect(invoice).toMatchObject({
+      invoiceNumber: 'INV-REAL-501',
+      currency: 'INR',
+      totalAmount: 7200,
+      documentId: expect.anything(),
+      extractionStatus: 'SUCCESS',
+    });
+    expect(String(purchase?.unitPrice)).toBe('72');
+    expect(String(purchase?.totalAmount)).toBe('7200.00');
+    expect(imported.document.purchaseIds).toHaveLength(1);
+    expect(buyerResult.extraction).toMatchObject({ method: 'OCR', status: 'SUCCESS' });
+    expect(buyerResult.extractedData?.items[0].matchedProductId).toBe(productId);
+    expect(String(buyerResult.invoiceId)).toBe(invoice?._id.toString());
+  });
 
   it('keeps missing boundary, reporting period, and methodology unavailable and shows them for buyer review', async () => {
     const buffer = createScannedPcf([

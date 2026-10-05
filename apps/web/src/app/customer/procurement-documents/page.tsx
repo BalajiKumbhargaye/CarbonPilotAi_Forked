@@ -8,6 +8,7 @@ import { Breadcrumb } from '@/components/ui/Breadcrumb';
 import { getProducts, type ProductItem } from '@/lib/products';
 import {
   downloadProcurementDocument,
+  getProcurementDocument,
   getProcurementDocumentSuppliers,
   getProcurementDocuments,
   importProcurementDocument,
@@ -18,6 +19,7 @@ import {
   type ProcurementDocumentStatus,
   type ProcurementDocumentSupplier,
   type ProcurementDocumentType,
+  type ProcurementReviewLineItem,
   type ProcurementReviewData,
 } from '@/lib/procurement-documents';
 
@@ -37,20 +39,62 @@ const emptyReview: ProcurementReviewData = {
 
 function dateInput(value?: string | Date) {
   if (!value) return '';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  if (value instanceof Date && Number.isNaN(value.getTime())) return '';
+  const dateText = value instanceof Date ? value.toISOString() : value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/.exec(dateText);
+  if (!match) return '';
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    ? `${yearText}-${monthText}-${dayText}`
+    : '';
 }
 
 function reviewFrom(document: ProcurementDocumentRecord): ProcurementReviewData {
   const saved = document.reviewData;
+  const extracted = document.extractedData;
+  const extractedItems = extracted?.items.map((item) => ({
+    productId: item.matchedProductId || '',
+    description: item.description || '',
+    productCode: item.productCode,
+    quantity: item.quantity || '',
+    unit: item.unit || '',
+    unitPrice: item.unitPrice || '',
+    totalAmount: item.totalAmount || '',
+  }));
+  const items = saved?.items || extractedItems || [{
+    productId: saved?.productId || '',
+    description: '',
+    quantity: saved?.quantity || '',
+    unit: saved?.unit || '',
+    unitPrice: saved?.unitPrice || '',
+    totalAmount: saved?.totalAmount || '',
+  }];
+  const first = items[0];
   return saved ? {
     ...emptyReview,
     ...saved,
+    items,
     documentDate: dateInput(saved.documentDate),
     expectedDeliveryDate: dateInput(saved.expectedDeliveryDate),
   } : {
     ...emptyReview,
-    supplierId: document.supplierId || '',
+    supplierId: extracted?.matchedSupplierId || document.supplierId || '',
+    productId: first?.productId || '',
+    documentNumber: extracted?.documentNumber || '',
+    documentDate: dateInput(extracted?.documentDate),
+    quantity: first?.quantity || '',
+    unit: first?.unit || '',
+    unitPrice: first?.unitPrice || '',
+    totalAmount: extracted?.totalAmount || first?.totalAmount || '',
+    currency: extracted?.currency || '',
+    purchaseOrderNumber: extracted?.purchaseOrderNumber || '',
+    expectedDeliveryDate: dateInput(extracted?.expectedDeliveryDate),
+    source: extracted ? 'EXTRACTED' : 'MANUAL',
+    items,
   };
 }
 
@@ -61,7 +105,7 @@ function statusStyle(status: ProcurementDocumentStatus) {
   return 'border-slate-200 bg-slate-100 text-slate-700';
 }
 
-function statusLabel(status: ProcurementDocumentStatus) {
+function statusLabel(status: string) {
   return status.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
@@ -81,7 +125,12 @@ export default function ProcurementDocumentsPage() {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [requestedDocumentId, setRequestedDocumentId] = useState('');
   const uploadForm = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    setRequestedDocumentId(new URLSearchParams(window.location.search).get('documentId') || '');
+  }, []);
 
   useEffect(() => {
     let current = true;
@@ -94,6 +143,18 @@ export default function ProcurementDocumentsPage() {
     }).finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
   }, []);
+
+  useEffect(() => {
+    if (!requestedDocumentId || loading) return;
+    const document = documents.find((item) => item._id === requestedDocumentId);
+    if (document) {
+      setSelected(document);
+      setReview(reviewFrom(document));
+    } else {
+      setError('The requested source document is not available to this organization.');
+    }
+    setRequestedDocumentId('');
+  }, [documents, loading, requestedDocumentId]);
 
   useEffect(() => {
     let current = true;
@@ -131,8 +192,10 @@ export default function ProcurementDocumentsPage() {
       return;
     }
     setUploading(true);
+    let uploadedDocument: ProcurementDocumentRecord | null = null;
     try {
       const uploaded = await uploadProcurementDocument(file, documentType, supplierId);
+      uploadedDocument = uploaded;
       setProcessing(true);
       setSelected({ ...uploaded, status: 'PROCESSING' });
       const processed = await processProcurementDocument(uploaded._id);
@@ -145,7 +208,23 @@ export default function ProcurementDocumentsPage() {
       setFile(null);
       uploadForm.current?.reset();
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : 'Document upload failed.');
+      let message = uploadError instanceof Error ? uploadError.message : 'Document upload failed.';
+      if (uploadedDocument) {
+        try {
+          const current = await getProcurementDocument(uploadedDocument._id);
+          setSelected(current);
+          setReview(reviewFrom(current));
+        } catch (refreshError) {
+          setSelected(uploadedDocument);
+          message += ` The upload was saved, but its current processing status could not be loaded: ${refreshError instanceof Error ? refreshError.message : 'refresh failed'}`;
+        }
+        try {
+          await refreshHistory();
+        } catch (refreshError) {
+          message += ` Document history could not be refreshed: ${refreshError instanceof Error ? refreshError.message : 'refresh failed'}`;
+        }
+      }
+      setError(message);
     } finally {
       setUploading(false);
       setProcessing(false);
@@ -159,10 +238,11 @@ export default function ProcurementDocumentsPage() {
     setError('');
     setNotice('');
     try {
+      const payload = updateReviewPayload();
       const saved = await saveProcurementDocumentReview(selected._id, {
-        ...review,
-        purchaseOrderNumber: review.purchaseOrderNumber?.trim() || undefined,
-        expectedDeliveryDate: review.expectedDeliveryDate || undefined,
+        ...payload,
+        purchaseOrderNumber: payload.purchaseOrderNumber?.trim() || undefined,
+        expectedDeliveryDate: payload.expectedDeliveryDate || undefined,
       });
       setSelected(saved);
       setReview(reviewFrom(saved));
@@ -181,10 +261,11 @@ export default function ProcurementDocumentsPage() {
     setError('');
     setNotice('');
     try {
+      const payload = updateReviewPayload();
       const saved = await saveProcurementDocumentReview(selected._id, {
-        ...review,
-        purchaseOrderNumber: review.purchaseOrderNumber?.trim() || undefined,
-        expectedDeliveryDate: review.expectedDeliveryDate || undefined,
+        ...payload,
+        purchaseOrderNumber: payload.purchaseOrderNumber?.trim() || undefined,
+        expectedDeliveryDate: payload.expectedDeliveryDate || undefined,
       });
       setSelected(saved);
       const result = await importProcurementDocument(selected._id);
@@ -232,6 +313,79 @@ export default function ProcurementDocumentsPage() {
 
   const setReviewField = (field: keyof ProcurementReviewData, value: string) => {
     setReview((current) => ({ ...current, [field]: value }));
+  };
+
+  const setReviewItem = (index: number, field: keyof ProcurementReviewLineItem, value: string) => {
+    setReview((current) => {
+      const items = [...(current.items || [])];
+      let item = { ...items[index], [field]: value };
+      if (field === 'productId') {
+        const product = products.find((candidate) => candidate._id === value);
+        item = {
+          ...item,
+          unit: item.unit || product?.unit || '',
+          description: item.description || product?.name || '',
+        };
+      }
+      items[index] = item;
+      const first = items[0];
+      return {
+        ...current,
+        items,
+        ...(index === 0 ? {
+          productId: first.productId,
+          quantity: first.quantity,
+          unit: first.unit,
+          unitPrice: first.unitPrice,
+        } : {}),
+      };
+    });
+  };
+
+  const addReviewItem = () => {
+    setReview((current) => ({
+      ...current,
+      items: [...(current.items || []), {
+        productId: '',
+        description: '',
+        quantity: '',
+        unit: '',
+        unitPrice: '',
+        totalAmount: '',
+      }],
+    }));
+  };
+
+  const removeReviewItem = (index: number) => {
+    setReview((current) => {
+      const items = (current.items || []).filter((_, itemIndex) => itemIndex !== index);
+      const first = items[0];
+      return {
+        ...current,
+        items,
+        productId: first?.productId || '',
+        quantity: first?.quantity || '',
+        unit: first?.unit || '',
+        unitPrice: first?.unitPrice || '',
+      };
+    });
+  };
+
+  const updateReviewPayload = (): ProcurementReviewData => {
+    const items = (review.items || []).map((item) => ({
+      ...item,
+      description: item.description || products.find((product) => product._id === item.productId)?.name || '',
+    }));
+    const first = items[0];
+    return {
+      ...review,
+      productId: first?.productId || review.productId,
+      quantity: first?.quantity || review.quantity,
+      unit: first?.unit || review.unit,
+      unitPrice: first?.unitPrice || review.unitPrice,
+      totalAmount: review.totalAmount,
+      items,
+    };
   };
 
   return (
@@ -333,7 +487,7 @@ export default function ProcurementDocumentsPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => download(selected)}><Download className="h-4 w-4" /> Download file</Button>
-            {selected.status === 'FAILED' && <Button variant="outline" size="sm" disabled={processing} onClick={retry}><RefreshCw className={`h-4 w-4 ${processing ? 'animate-spin' : ''}`} /> Retry</Button>}
+            {(selected.status === 'FAILED' || (selected.status === 'NEEDS_REVIEW' && selected.extraction?.status !== 'SUCCESS')) && <Button variant="outline" size="sm" disabled={processing} onClick={retry}><RefreshCw className={`h-4 w-4 ${processing ? 'animate-spin' : ''}`} /> Retry</Button>}
           </div>
         </div>
 
@@ -341,6 +495,61 @@ export default function ProcurementDocumentsPage() {
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
           <div><p className="font-semibold">Processing failed</p><p className="mt-1">{selected.processingError || 'We could not extract reliable procurement data from this document.'}</p><p className="mt-1">Enter the document values below; nothing will be imported until you confirm.</p></div>
         </div>}
+
+        <section aria-label="Document extraction result" className="mt-5 space-y-4 border-y border-slate-200 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-base font-semibold text-slate-900">Extraction result</h3>
+            <span className="text-xs text-slate-600">
+              {selected.extraction?.method?.replaceAll('_', ' ') || 'Method unavailable'}
+              {selected.extraction?.status ? ` · ${statusLabel(selected.extraction.status)}` : ''}
+              {selected.extraction?.processedAt ? ` · ${new Date(selected.extraction.processedAt).toLocaleString()}` : ''}
+            </span>
+          </div>
+          {!selected.extraction && <p className="text-sm text-slate-500">No extraction result is available for this document.</p>}
+          {selected.extraction?.errorMessage && <p role="alert" className="border-l-4 border-rose-500 bg-rose-50 px-3 py-2 text-sm text-rose-900">{selected.extraction.errorMessage}</p>}
+          {selected.extractedData && <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <p className="text-sm text-slate-700">Supplier match: <span className="font-medium">{statusLabel(selected.extractedData.supplierMatchStatus)}</span>{selected.extractedData.supplierName ? ` · ${selected.extractedData.supplierName}` : ''}</p>
+              <p className="text-sm text-slate-700">Line items: <span className="font-medium">{selected.extractedData.items.length}</span></p>
+            </div>
+            {selected.extractedData.items.length > 0 && <div className="overflow-x-auto border border-slate-200">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="bg-slate-50 uppercase text-slate-500"><tr><th className="px-3 py-2">Description / code</th><th className="px-3 py-2">Match</th><th className="px-3 py-2">Quantity</th><th className="px-3 py-2">Unit price</th><th className="px-3 py-2">Line total</th></tr></thead>
+                <tbody className="divide-y divide-slate-200">
+                  {selected.extractedData.items.map((item, index) => <tr key={`${item.productCode || item.description || 'line'}-${index}`}>
+                    <td className="px-3 py-2 text-slate-800">{item.description || 'Description unavailable'}{item.productCode ? ` · ${item.productCode}` : ''}</td>
+                    <td className="px-3 py-2">{statusLabel(item.productMatchStatus)}</td>
+                    <td className="px-3 py-2">{item.quantity ? `${item.quantity}${item.unit ? ` ${item.unit}` : ''}` : 'Not available'}</td>
+                    <td className="px-3 py-2">{item.unitPrice || 'Not available'}</td>
+                    <td className="px-3 py-2">{item.totalAmount || 'Not available'}</td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>}
+            {selected.extractedData.missingFields.length > 0 && <p className="text-sm text-amber-800">Missing: {selected.extractedData.missingFields.join(', ')}</p>}
+            {selected.extractedData.validationWarnings.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-amber-900">{selected.extractedData.validationWarnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>}
+          </>}
+          <div>
+            <h4 className="mb-2 text-sm font-semibold text-slate-800">Extracted source fields</h4>
+            {(selected.extraction?.fields ?? []).length > 0 ? <div className="overflow-x-auto border border-slate-200">
+              <table className="w-full min-w-[560px] text-left text-xs">
+                <thead className="bg-slate-50 uppercase text-slate-500"><tr><th className="px-3 py-2">Field</th><th className="px-3 py-2">Value</th><th className="px-3 py-2">Source</th><th className="px-3 py-2">Confidence</th></tr></thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(selected.extraction?.fields ?? []).map((field, index) => <tr key={`${field.field}-${index}`}>
+                    <td className="px-3 py-2 font-medium text-slate-800">{field.field.replaceAll('_', ' ')}</td>
+                    <td className="px-3 py-2">{String(field.value)}{field.unit ? ` ${field.unit}` : ''}</td>
+                    <td className="max-w-md px-3 py-2 text-slate-600">{field.page ? `Page ${field.page}: ` : ''}{field.sourceText || 'Source snippet unavailable'}</td>
+                    <td className="px-3 py-2">{typeof field.confidence === 'number' ? `${Math.round(field.confidence * 100)}%` : 'Not available'}</td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div> : <p className="text-sm text-slate-500">No structured fields were extracted from this document.</p>}
+          </div>
+          {selected.extraction?.text && <details className="text-sm">
+            <summary className="cursor-pointer font-medium text-slate-700">View extracted text</summary>
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">{selected.extraction.text}</pre>
+          </details>}
+        </section>
 
         {selected.status === 'IMPORTED' ? <div className="mt-5 flex flex-wrap items-center gap-3 border-y border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-950">
           <Check className="h-5 w-5" /><span>Procurement record imported.</span>
@@ -355,17 +564,15 @@ export default function ProcurementDocumentsPage() {
 
             <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               <label className="field-label">Supplier
-                <select required value={review.supplierId} onChange={(event) => setReview((current) => ({ ...current, supplierId: event.target.value, productId: '' }))} className="field-input">
+                <select required value={review.supplierId} onChange={(event) => setReview((current) => ({
+                  ...current,
+                  supplierId: event.target.value,
+                  productId: '',
+                  items: (current.items || []).map((item) => ({ ...item, productId: '', unit: '' })),
+                }))} className="field-input">
                   <option value="">Select connected supplier</option>
                   {suppliers.map((supplier) => <option key={supplier._id} value={supplier._id}>{supplier.name}</option>)}
                 </select>
-              </label>
-              <label className="field-label">Product
-                <select required value={review.productId} onChange={(event) => setReviewField('productId', event.target.value)} className="field-input" disabled={!review.supplierId}>
-                  <option value="">Select supplier product</option>
-                  {products.map((product) => <option key={product._id} value={product._id}>{product.name}{product.productCode ? ` · ${product.productCode}` : ''}</option>)}
-                </select>
-                {review.supplierId && !products.length && <span className="text-xs font-normal text-amber-800">No active products. <Link className="underline" href="/customer/products">Open product management</Link></span>}
               </label>
               <label className="field-label">{selected.type === 'INVOICE' ? 'Invoice number' : 'PO number'}
                 <input required maxLength={100} value={review.documentNumber} onChange={(event) => setReviewField('documentNumber', event.target.value)} className="field-input" />
@@ -373,16 +580,7 @@ export default function ProcurementDocumentsPage() {
               <label className="field-label">{selected.type === 'INVOICE' ? 'Invoice date' : 'PO date'}
                 <input required type="date" value={review.documentDate} onChange={(event) => setReviewField('documentDate', event.target.value)} className="field-input" />
               </label>
-              <label className="field-label">Quantity
-                <input required type="number" min="0.00000001" step="any" value={review.quantity} onChange={(event) => setReviewField('quantity', event.target.value)} className="field-input" />
-              </label>
-              <label className="field-label">Unit
-                <input required maxLength={40} value={review.unit} onChange={(event) => setReviewField('unit', event.target.value)} className="field-input" />
-              </label>
-              <label className="field-label">Unit price
-                <input required type="number" min="0" step="any" value={review.unitPrice} onChange={(event) => setReviewField('unitPrice', event.target.value)} className="field-input" />
-              </label>
-              <label className="field-label">Total amount
+              <label className="field-label">Document total
                 <input required type="number" min="0" step="0.01" value={review.totalAmount} onChange={(event) => setReviewField('totalAmount', event.target.value)} className="field-input" />
               </label>
               <label className="field-label">Currency
@@ -394,6 +592,48 @@ export default function ProcurementDocumentsPage() {
                 <input type="date" value={review.expectedDeliveryDate || ''} onChange={(event) => setReviewField('expectedDeliveryDate', event.target.value)} className="field-input" />
               </label>}
             </div>
+
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div><h4 className="text-sm font-semibold text-slate-900">Line items</h4><p className="text-xs text-slate-500">Match each line to an active product. Imported transaction prices are kept from this reviewed document.</p></div>
+                <Button type="button" variant="outline" size="sm" onClick={addReviewItem}>Add line item</Button>
+              </div>
+              {(review.items || []).map((item, index) => <fieldset key={`review-line-${index}`} className="grid gap-3 border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-4">
+                <legend className="px-1 text-xs font-semibold text-slate-700">Line {index + 1}</legend>
+                <label className="field-label">Product
+                  <select required value={item.productId} onChange={(event) => setReviewItem(index, 'productId', event.target.value)} className="field-input" disabled={!review.supplierId}>
+                    <option value="">Select supplier product</option>
+                    {products.map((product) => <option key={product._id} value={product._id}>{product.name}{product.productCode ? ` · ${product.productCode}` : ''}</option>)}
+                  </select>
+                  {review.supplierId && !products.length && <span className="text-xs font-normal text-amber-800">No active products. <Link className="underline" href="/customer/products">Open product management</Link></span>}
+                </label>
+                <label className="field-label">Description
+                  <input required maxLength={500} value={item.description} onChange={(event) => setReviewItem(index, 'description', event.target.value)} className="field-input" />
+                </label>
+                <label className="field-label">Product code <span className="font-normal text-slate-400">Optional</span>
+                  <input maxLength={100} value={item.productCode || ''} onChange={(event) => setReviewItem(index, 'productCode', event.target.value)} className="field-input" />
+                </label>
+                <label className="field-label">Quantity
+                  <input required type="number" min="0.00000001" step="any" value={item.quantity} onChange={(event) => setReviewItem(index, 'quantity', event.target.value)} className="field-input" />
+                </label>
+                <label className="field-label">Unit (verify against product)
+                  <input required maxLength={40} value={item.unit} onChange={(event) => setReviewItem(index, 'unit', event.target.value)} className="field-input" />
+                  <span className="text-xs font-normal text-slate-500">Must match the selected product. No unit or quantity conversion is applied automatically.</span>
+                </label>
+                <label className="field-label">Historical unit price
+                  <input required type="number" min="0" step="any" value={item.unitPrice} onChange={(event) => setReviewItem(index, 'unitPrice', event.target.value)} className="field-input" />
+                </label>
+                <label className="field-label">Line total
+                  <input required type="number" min="0" step="0.01" value={item.totalAmount} onChange={(event) => setReviewItem(index, 'totalAmount', event.target.value)} className="field-input" />
+                </label>
+                {review.items && review.items.length > 1 && <div className="flex items-end"><Button type="button" variant="outline" size="sm" onClick={() => removeReviewItem(index)}>Remove line</Button></div>}
+              </fieldset>)}
+              {!products.length && review.supplierId && <p className="text-sm text-amber-800">No active supplier products are available to match these lines.</p>}
+            </div>
+            {(selected.extractedData?.validationWarnings || review.validationWarnings || []).length > 0 && <div className="border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+              <p className="font-semibold">Review extraction warnings before importing</p>
+              <ul className="mt-1 list-disc pl-5">{[...(selected.extractedData?.validationWarnings || []), ...(review.validationWarnings || [])].filter((warning, index, warnings) => warnings.indexOf(warning) === index).map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            </div>}
 
             <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-4">
               <Button type="submit" variant="outline" disabled={savingReview || importing}>

@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { CarbonCalculationModel } from '../../models/CarbonCalculation';
-import { CarbonFactorModel } from '../../models/CarbonFactor';
+import { CarbonFactorModel, ICarbonFactorDocument } from '../../models/CarbonFactor';
 import { PurchaseModel } from '../../models/Purchase';
 import { ClaimModel } from '../../models/Claim';
 import { ProductModel } from '../../models/Product';
@@ -9,19 +9,20 @@ import { SupplierModel } from '../../models/Supplier';
 import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
 import { AppError, sendSuccess, sendError } from '../../utils/response';
 import { authenticate } from '../../middleware/auth.middleware';
-import { requireOrganizationType } from '../../middleware/rbac.middleware';
+import { requireOrganizationType, requireRoles } from '../../middleware/rbac.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { createCarbonFactorSchema, calculateCarbonSchema, compareCarbonSchema } from '@carbonpilot/validation';
 import {
   ClaimStatus,
   OrganizationType,
+  UserRole,
   CarbonCalculationStatus,
   SupplierStatus,
   QuestionnaireCategory,
   QuestionResponseStatus,
   CertificateStatus,
 } from '@carbonpilot/shared';
-import { areComparablePcfValues, canApplyCarbonIntensity, normalizeCarbonData } from '../verification/normalization';
+import { areComparablePcfValues, normalizeCarbonData, normalizeUnitValue } from '../verification/normalization';
 import { DataRequestModel } from '../../models/DataRequest';
 import { QuestionResponseModel } from '../../models/QuestionResponse';
 import { CertificateModel } from '../../models/Certificate';
@@ -31,29 +32,113 @@ function normalizeText(value?: string) {
   return value?.trim().toLowerCase().replace(/\s+/g, '') || '';
 }
 
+function finiteNonNegativeValue(value: unknown): number | undefined {
+  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return undefined;
+  const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function mapSourceReference(sourceReference?: {
+  documentId?: unknown;
+  page?: number;
+  sourceText?: string;
+  sourceType?: 'DOCUMENT_EXTRACTION' | 'QUESTIONNAIRE';
+  extractionMethod?: 'NATIVE_TEXT' | 'OCR' | 'NATIVE_TEXT_AND_OCR';
+} | null) {
+  if (!sourceReference) return undefined;
+  const document = sourceReference.documentId && typeof sourceReference.documentId === 'object'
+    ? sourceReference.documentId as { _id?: { toString(): string }; filename?: string }
+    : undefined;
+  const documentId = document?._id?.toString()
+    || (typeof sourceReference.documentId === 'string' ? sourceReference.documentId : undefined);
+  return {
+    documentId,
+    documentName: document?.filename,
+    page: sourceReference.page,
+    sourceText: sourceReference.sourceText,
+    sourceType: sourceReference.sourceType,
+    extractionMethod: sourceReference.extractionMethod,
+  };
+}
+
+export function calculateCarbonEmissions(quantity: number, quantityUnit: string, intensity: number, intensityUnit: string) {
+  if (!Number.isFinite(quantity) || quantity < 0 || !Number.isFinite(intensity) || intensity < 0) return undefined;
+  const normalizedQuantity = normalizeUnitValue(quantity, quantityUnit);
+  const normalizedIntensity = normalizeCarbonData({ value: intensity, unit: intensityUnit });
+  if (!normalizedQuantity || !normalizedIntensity?.normalizedUnit || normalizedIntensity.normalizedValue === undefined) {
+    return undefined;
+  }
+
+  const [numerator, denominator, ...extra] = normalizedIntensity.normalizedUnit.split('/');
+  if (numerator !== 'kgCO2e' || !denominator || extra.length || denominator !== normalizedQuantity.unit) return undefined;
+  const emissions = normalizedQuantity.value * normalizedIntensity.normalizedValue;
+  return Number.isFinite(emissions) && emissions >= 0 ? Number(emissions.toFixed(6)) : undefined;
+}
+
+function carbonBasis(record: {
+  carbonIntensityUnit?: string;
+  functionalUnit?: string;
+  lifecycleBoundary?: string;
+  reportingPeriod?: string;
+  methodology?: string;
+}) {
+  return [
+    normalizeText(record.carbonIntensityUnit),
+    normalizeText(record.functionalUnit),
+    normalizeText(record.lifecycleBoundary),
+    normalizeText(record.reportingPeriod),
+    normalizeText(record.methodology),
+  ].join('|');
+}
+
+function sumForSingleCarbonBasis<T extends {
+  emissions?: number;
+  carbonIntensityUnit?: string;
+  functionalUnit?: string;
+  lifecycleBoundary?: string;
+  reportingPeriod?: string;
+  methodology?: string;
+}>(records: T[]) {
+  const available = records.filter((record) => record.emissions !== undefined && Number.isFinite(record.emissions));
+  if (!available.length || available.some((record) => [
+    record.carbonIntensityUnit,
+    record.functionalUnit,
+    record.lifecycleBoundary,
+    record.reportingPeriod,
+    record.methodology,
+  ].some((value) => !value?.trim())) || new Set(available.map(carbonBasis)).size !== 1) return undefined;
+  return Number(available.reduce((sum, record) => sum + record.emissions!, 0).toFixed(6));
+}
+
 export function calculateExpectedActualTracking(params: {
   expectedQuantity?: number;
+  expectedQuantityUnit?: string;
   expectedCarbonIntensity?: number;
   expectedCarbonIntensityUnit?: string;
   expectedFunctionalUnit?: string;
   expectedBoundary?: string;
   expectedReportingPeriod?: string;
+  expectedMethodology?: string;
   actualQuantity?: number;
+  actualQuantityUnit?: string;
   actualCarbonIntensity?: number;
   actualCarbonIntensityUnit?: string;
   actualFunctionalUnit?: string;
   actualBoundary?: string;
   actualReportingPeriod?: string;
+  actualMethodology?: string;
 }) {
   const expectedQuantity = Number.isFinite(params.expectedQuantity) ? Number(params.expectedQuantity) : undefined;
   const expectedIntensity = Number.isFinite(params.expectedCarbonIntensity) ? Number(params.expectedCarbonIntensity) : undefined;
   const actualQuantity = Number.isFinite(params.actualQuantity) ? Number(params.actualQuantity) : undefined;
   const actualIntensity = Number.isFinite(params.actualCarbonIntensity) ? Number(params.actualCarbonIntensity) : undefined;
   const expectedEmissions = expectedQuantity !== undefined && expectedIntensity !== undefined
-    ? Number((expectedQuantity * expectedIntensity).toFixed(6))
+    && params.expectedQuantityUnit && params.expectedCarbonIntensityUnit
+    ? calculateCarbonEmissions(expectedQuantity, params.expectedQuantityUnit, expectedIntensity, params.expectedCarbonIntensityUnit)
     : undefined;
   const actualEmissions = actualQuantity !== undefined && actualIntensity !== undefined
-    ? Number((actualQuantity * actualIntensity).toFixed(6))
+    && params.actualQuantityUnit && params.actualCarbonIntensityUnit
+    ? calculateCarbonEmissions(actualQuantity, params.actualQuantityUnit, actualIntensity, params.actualCarbonIntensityUnit)
     : undefined;
 
   const hasExpected = expectedEmissions !== undefined;
@@ -68,8 +153,8 @@ export function calculateExpectedActualTracking(params: {
       variancePercent: undefined,
       comparisonReason: 'No expected or actual carbon data is available.',
       sourceOfVariance: 'NONE',
-      expected: { quantity: expectedQuantity, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod },
-      actual: { quantity: actualQuantity, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod },
+      expected: { quantity: expectedQuantity, quantityUnit: params.expectedQuantityUnit, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod, methodology: params.expectedMethodology },
+      actual: { quantity: actualQuantity, quantityUnit: params.actualQuantityUnit, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod, methodology: params.actualMethodology },
     };
   }
 
@@ -82,8 +167,8 @@ export function calculateExpectedActualTracking(params: {
       variancePercent: undefined,
       comparisonReason: 'Actual carbon data is not available for this purchase.',
       sourceOfVariance: 'NONE',
-      expected: { quantity: expectedQuantity, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod },
-      actual: { quantity: actualQuantity, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod },
+      expected: { quantity: expectedQuantity, quantityUnit: params.expectedQuantityUnit, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod, methodology: params.expectedMethodology },
+      actual: { quantity: actualQuantity, quantityUnit: params.actualQuantityUnit, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod, methodology: params.actualMethodology },
     };
   }
 
@@ -96,51 +181,67 @@ export function calculateExpectedActualTracking(params: {
       variancePercent: undefined,
       comparisonReason: 'Expected carbon baseline is unavailable for this purchase.',
       sourceOfVariance: 'NONE',
-      expected: { quantity: expectedQuantity, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod },
-      actual: { quantity: actualQuantity, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod },
+      expected: { quantity: expectedQuantity, quantityUnit: params.expectedQuantityUnit, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod, methodology: params.expectedMethodology },
+      actual: { quantity: actualQuantity, quantityUnit: params.actualQuantityUnit, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod, methodology: params.actualMethodology },
     };
   }
 
   const comparable = areComparablePcfValues(
     {
-      unit: params.expectedCarbonIntensityUnit || 'kgCO2e/kg',
+      unit: params.expectedCarbonIntensityUnit || '',
       functionalUnit: params.expectedFunctionalUnit,
       boundary: params.expectedBoundary,
       reportingPeriod: params.expectedReportingPeriod,
+      methodology: params.expectedMethodology,
     },
     {
-      unit: params.actualCarbonIntensityUnit || 'kgCO2e/kg',
+      unit: params.actualCarbonIntensityUnit || '',
       functionalUnit: params.actualFunctionalUnit,
       boundary: params.actualBoundary,
       reportingPeriod: params.actualReportingPeriod,
-    }
+      methodology: params.actualMethodology,
+    },
+    true
   );
 
   if (!comparable) {
     const reasons: string[] = [];
-    if (normalizeText(params.expectedBoundary) !== normalizeText(params.actualBoundary)) reasons.push('Expected and actual carbon data use different lifecycle boundaries.');
-    if (normalizeText(params.expectedFunctionalUnit) !== normalizeText(params.actualFunctionalUnit)) reasons.push('Expected and actual carbon data use different functional units.');
-    if (normalizeText(params.expectedReportingPeriod) !== normalizeText(params.actualReportingPeriod)) reasons.push('Expected and actual carbon data use different reporting periods.');
-    if (!params.expectedCarbonIntensityUnit || !params.actualCarbonIntensityUnit || normalizeText(params.expectedCarbonIntensityUnit) !== normalizeText(params.actualCarbonIntensityUnit)) reasons.push('Expected and actual carbon intensity units are not compatible.');
+    if (!params.expectedBoundary || !params.actualBoundary || normalizeText(params.expectedBoundary) !== normalizeText(params.actualBoundary)) reasons.push('Expected and actual carbon data use different or missing lifecycle boundaries.');
+    if (!params.expectedFunctionalUnit || !params.actualFunctionalUnit || normalizeText(params.expectedFunctionalUnit) !== normalizeText(params.actualFunctionalUnit)) reasons.push('Expected and actual carbon data use different or missing functional units.');
+    if (!params.expectedReportingPeriod || !params.actualReportingPeriod || normalizeText(params.expectedReportingPeriod) !== normalizeText(params.actualReportingPeriod)) reasons.push('Expected and actual carbon data use different or missing reporting periods.');
+    if (!params.expectedCarbonIntensityUnit || !params.actualCarbonIntensityUnit || normalizeText(params.expectedCarbonIntensityUnit) !== normalizeText(params.actualCarbonIntensityUnit)) {
+      const expectedUnit = params.expectedCarbonIntensityUnit ? normalizeCarbonData({ value: 1, unit: params.expectedCarbonIntensityUnit })?.normalizedUnit : undefined;
+      const actualUnit = params.actualCarbonIntensityUnit ? normalizeCarbonData({ value: 1, unit: params.actualCarbonIntensityUnit })?.normalizedUnit : undefined;
+      if (!expectedUnit || !actualUnit || expectedUnit !== actualUnit) reasons.push('Expected and actual carbon intensity units are not compatible.');
+    }
+    if (!params.expectedMethodology || !params.actualMethodology || normalizeText(params.expectedMethodology) !== normalizeText(params.actualMethodology)) reasons.push('Expected and actual carbon data use different or missing methodologies.');
     return {
       status: 'NOT_COMPARABLE',
       expectedEmissions,
       actualEmissions,
       variance: undefined,
       variancePercent: undefined,
-      comparisonReason: reasons[0] || 'Carbon data is not comparable for this purchase.',
+      comparisonReason: reasons.join(' ') || 'Carbon data is not comparable for this purchase.',
       sourceOfVariance: 'NONE',
-      expected: { quantity: expectedQuantity, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod },
-      actual: { quantity: actualQuantity, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod },
+      expected: { quantity: expectedQuantity, quantityUnit: params.expectedQuantityUnit, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod, methodology: params.expectedMethodology },
+      actual: { quantity: actualQuantity, quantityUnit: params.actualQuantityUnit, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod, methodology: params.actualMethodology },
     };
   }
 
   const variance = Number((actualEmissions! - expectedEmissions!).toFixed(6));
   const variancePercent = expectedEmissions !== undefined && expectedEmissions !== 0
     ? Number(((variance / expectedEmissions) * 100).toFixed(4))
-    : 0;
+    : undefined;
   const quantityVariance = expectedQuantity !== undefined && actualQuantity !== undefined && expectedQuantity !== actualQuantity;
-  const intensityVariance = expectedIntensity !== undefined && actualIntensity !== undefined && expectedIntensity !== actualIntensity;
+  const expectedNormalizedIntensity = expectedIntensity !== undefined && params.expectedCarbonIntensityUnit
+    ? normalizeCarbonData({ value: expectedIntensity, unit: params.expectedCarbonIntensityUnit })?.normalizedValue
+    : undefined;
+  const actualNormalizedIntensity = actualIntensity !== undefined && params.actualCarbonIntensityUnit
+    ? normalizeCarbonData({ value: actualIntensity, unit: params.actualCarbonIntensityUnit })?.normalizedValue
+    : undefined;
+  const intensityVariance = expectedNormalizedIntensity !== undefined && actualNormalizedIntensity !== undefined
+    ? expectedNormalizedIntensity !== actualNormalizedIntensity
+    : expectedIntensity !== undefined && actualIntensity !== undefined && expectedIntensity !== actualIntensity;
   const sourceOfVariance = quantityVariance && intensityVariance ? 'BOTH' : quantityVariance ? 'QUANTITY' : intensityVariance ? 'CARBON_INTENSITY' : 'NONE';
 
   return {
@@ -151,8 +252,8 @@ export function calculateExpectedActualTracking(params: {
     variancePercent,
     comparisonReason: 'Expected and actual carbon emissions are directly comparable.',
     sourceOfVariance,
-    expected: { quantity: expectedQuantity, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod },
-    actual: { quantity: actualQuantity, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod },
+    expected: { quantity: expectedQuantity, quantityUnit: params.expectedQuantityUnit, carbonIntensity: expectedIntensity, carbonIntensityUnit: params.expectedCarbonIntensityUnit, functionalUnit: params.expectedFunctionalUnit, boundary: params.expectedBoundary, reportingPeriod: params.expectedReportingPeriod, methodology: params.expectedMethodology },
+    actual: { quantity: actualQuantity, quantityUnit: params.actualQuantityUnit, carbonIntensity: actualIntensity, carbonIntensityUnit: params.actualCarbonIntensityUnit, functionalUnit: params.actualFunctionalUnit, boundary: params.actualBoundary, reportingPeriod: params.actualReportingPeriod, methodology: params.actualMethodology },
   };
 }
 
@@ -273,18 +374,34 @@ export class CarbonService {
     return supplier.organizationId.toString();
   }
 
-  private async resolveRelevantClaim(productId: string, supplierId?: string, claimId?: string) {
-    if (claimId && mongoose.isValidObjectId(claimId)) {
+  private async resolveRelevantClaim(productId: string, supplierId: string, buyerOrganizationId: string, claimId?: string) {
+    const claimFilter = {
+      productId,
+      supplierId,
+      type: /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i,
+      $or: [
+        { buyerOrganizationId },
+        { buyerOrganizationId: { $exists: false } },
+        { buyerOrganizationId: null },
+      ],
+    };
+    if (claimId) {
+      if (!mongoose.isValidObjectId(claimId)) throw new AppError('Carbon claim not found', 404, 'NOT_FOUND');
       const claim = await ClaimModel.findById(claimId);
-      if (claim) return claim;
+      if (!claim) throw new AppError('Carbon claim not found', 404, 'NOT_FOUND');
+      const claimBuyerId = claim.buyerOrganizationId?.toString();
+      if (
+        claim.productId?.toString() !== productId
+        || claim.supplierId.toString() !== supplierId
+        || (claimBuyerId && claimBuyerId !== buyerOrganizationId)
+        || !/PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i.test(claim.type)
+      ) {
+        throw new AppError('The selected carbon claim does not belong to this purchase', 403, 'FORBIDDEN');
+      }
+      return claim;
     }
 
-    const filter: Record<string, unknown> = { productId };
-    if (supplierId) filter.supplierId = supplierId;
-    const claim = await ClaimModel.findOne({
-      ...filter,
-      status: { $in: [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED] },
-    }).sort({ createdAt: -1 });
+    const claim = await ClaimModel.findOne(claimFilter).sort({ createdAt: -1 });
     return claim || null;
   }
 
@@ -295,60 +412,127 @@ export class CarbonService {
     claimId?: string;
     customerOrgId: string;
   }) {
+    if (!mongoose.isValidObjectId(params.purchaseId)) {
+      throw new AppError('Purchase not found', 404, 'NOT_FOUND');
+    }
     const purchase = await PurchaseModel.findById(params.purchaseId).populate('productId');
     if (!purchase) {
       throw new AppError('Purchase not found', 404, 'NOT_FOUND');
+    }
+    if (purchase.customerOrganizationId.toString() !== params.customerOrgId) {
+      throw new AppError('You cannot calculate emissions for this purchase', 403, 'FORBIDDEN');
+    }
+
+    const supplierRecord = await SupplierModel.findById(purchase.supplierId);
+    if (!supplierRecord || supplierRecord.organizationId.toString() !== purchase.supplierOrganizationId.toString()) {
+      throw new AppError('Purchase supplier organization is invalid', 409, 'INVALID_PURCHASE');
     }
 
     const product = await ProductModel.findById(purchase.productId);
     if (!product) {
       throw new AppError('Purchase product not found', 404, 'NOT_FOUND');
     }
+    if (product.supplierId.toString() !== purchase.supplierId.toString()) {
+      throw new AppError('Purchase product does not belong to its supplier', 409, 'INVALID_PURCHASE');
+    }
 
-    const claim = await this.resolveRelevantClaim(product._id.toString(), purchase.supplierId?.toString(), params.claimId);
-    const candidateFactor = params.customFactor ?? claim?.value;
-    const candidateUnit = claim?.unit ?? 'kgCO2e/kg';
+    if (params.carbonFactorId && (params.claimId || params.customFactor !== undefined)) {
+      throw new AppError('Choose one carbon source for this calculation', 400, 'INVALID_FACTOR_SELECTION');
+    }
+    if (params.carbonFactorId && !mongoose.isValidObjectId(params.carbonFactorId)) {
+      throw new AppError('The selected carbon factor was not found', 404, 'NOT_FOUND');
+    }
 
-    let factorValue = Number(candidateFactor ?? claim?.value ?? 0);
-    let factorUnit = claim?.unit || candidateUnit || 'kgCO2e/kg';
-    let factorSource = claim ? `Supplier Claim (${claim.reportingPeriod || 'reporting period not provided'})` : 'Manual Input Factor';
-    let methodology = claim?.methodology || 'Not provided';
+    let configuredFactor: ICarbonFactorDocument | null = null;
+    if (params.carbonFactorId) {
+      configuredFactor = await CarbonFactorModel.findById(params.carbonFactorId);
+    }
+    const relationship = await SupplierRelationshipModel.findOne({
+      customerOrganizationId: params.customerOrgId,
+      supplierOrganizationId: purchase.supplierOrganizationId,
+      status: { $ne: SupplierStatus.TERMINATED },
+    });
+    if (!configuredFactor && !relationship?.sharedDataPermissions.carbon && params.claimId) {
+      throw new AppError('Carbon data is not shared with this buyer', 403, 'FORBIDDEN');
+    }
+    const claim = !params.carbonFactorId && relationship?.sharedDataPermissions.carbon
+      ? await this.resolveRelevantClaim(product._id.toString(), purchase.supplierId.toString(), params.customerOrgId, params.claimId)
+      : null;
+    const claimValue = finiteNonNegativeValue(claim?.value);
+    let factorValue = claimValue;
+    let factorUnit = claim?.unit || '';
+    let factorSource = claim ? `Supplier Claim (${claim.reportingPeriod || 'reporting period not provided'})` : 'UNAVAILABLE';
+    let methodology = claim?.methodology;
     let evidenceStatus: ClaimStatus = claim?.status || ClaimStatus.PENDING;
-    let claimId = claim?._id?.toString();
+    let claimId = claim?._id.toString();
     let reason: string | undefined;
     let status: CarbonCalculationStatus = CarbonCalculationStatus.CALCULATED;
     let totalEmissions = 0;
-    let requestedFactorFound = !params.carbonFactorId;
+    const requestedFactorFound = !params.carbonFactorId || !!configuredFactor;
+    let factorFunctionalUnit = claim?.normalizedData?.functionalUnit;
+    let factorBoundary = claim?.normalizedData?.boundary || claim?.boundary;
+    let factorReportingPeriod = claim?.normalizedData?.reportingPeriod || claim?.reportingPeriod;
+    let sourceReference = claim?.sourceReference;
 
-    if (params.carbonFactorId) {
-      const factor = await CarbonFactorModel.findById(params.carbonFactorId);
-      if (factor) {
-        requestedFactorFound = true;
-        factorValue = Number(factor.value);
-        factorUnit = factor.unit;
-        factorSource = factor.source;
-        methodology = factor.methodology;
-        evidenceStatus = ClaimStatus.PARTIALLY_SUPPORTED;
-      }
+    if (configuredFactor) {
+      factorValue = finiteNonNegativeValue(configuredFactor.value);
+      factorUnit = configuredFactor.unit;
+      factorSource = configuredFactor.source;
+      methodology = configuredFactor.methodology;
+      factorReportingPeriod = String(configuredFactor.year);
+      factorFunctionalUnit = undefined;
+      factorBoundary = undefined;
+      evidenceStatus = ClaimStatus.PARTIALLY_SUPPORTED;
+      claimId = undefined;
+      sourceReference = undefined;
     }
 
-    if (claim && ![ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(claim.status)) {
+    if (!params.carbonFactorId && claim && ![ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(claim.status)) {
       status = CarbonCalculationStatus.BLOCKED;
       reason = 'Cannot calculate procurement emissions. Carbon claim has not met the existing support and verification rules.';
     } else if (!claim && !params.carbonFactorId) {
       status = CarbonCalculationStatus.BLOCKED;
       reason = 'Cannot calculate procurement emissions. No supported claim or configured carbon factor is available for this purchase.';
-    } else if (params.customFactor !== undefined && (!claim || Number(params.customFactor) !== Number(claim.value))) {
+    } else if (params.customFactor !== undefined && (!claim || finiteNonNegativeValue(params.customFactor) !== claimValue)) {
       status = CarbonCalculationStatus.BLOCKED;
       reason = 'Cannot calculate procurement emissions. A custom input cannot override supported claim data without verification.';
     } else if (!requestedFactorFound) {
       status = CarbonCalculationStatus.BLOCKED;
       reason = 'Cannot calculate procurement emissions. The selected carbon factor was not found.';
+    } else if (!params.carbonFactorId && claim && claimValue === undefined) {
+      status = CarbonCalculationStatus.BLOCKED;
+      reason = 'Cannot calculate procurement emissions. The carbon claim does not contain a finite, non-negative value.';
+    } else if (!factorUnit || factorValue === undefined || !Number.isFinite(factorValue) || factorValue < 0) {
+      status = CarbonCalculationStatus.BLOCKED;
+      reason = 'Cannot calculate procurement emissions. The carbon factor value or unit is unavailable or invalid.';
+    } else if (!finiteNonNegativeValue(purchase.quantity) || !purchase.unit) {
+      status = CarbonCalculationStatus.BLOCKED;
+      reason = 'Cannot calculate procurement emissions. The purchased quantity or unit is unavailable or invalid.';
     }
 
-    if (status !== CarbonCalculationStatus.BLOCKED && !canApplyCarbonIntensity(purchase.unit, factorUnit)) {
+    const normalizedIntensity = factorValue !== undefined && factorUnit
+      ? normalizeCarbonData({
+          value: factorValue,
+          unit: factorUnit,
+          functionalUnit: factorFunctionalUnit,
+          boundary: factorBoundary,
+          reportingPeriod: factorReportingPeriod,
+        })
+      : undefined;
+    const normalizedQuantity = status === CarbonCalculationStatus.BLOCKED
+      ? undefined
+      : normalizeUnitValue(Number(purchase.quantity), purchase.unit);
+    const normalizedDenominator = normalizedIntensity?.normalizedUnit?.split('/')[1];
+    if (status !== CarbonCalculationStatus.BLOCKED && (
+      !normalizedIntensity
+      || normalizedIntensity.normalizedValue === undefined
+      || !normalizedIntensity.normalizedUnit
+      || !normalizedQuantity
+      || !normalizedDenominator
+      || normalizedDenominator !== normalizedQuantity.unit
+    )) {
       status = CarbonCalculationStatus.BLOCKED;
-      reason = 'Cannot calculate procurement emissions. Supplier submitted PCF value but the declared functional unit is not compatible with the purchased quantity.';
+      reason = 'Cannot calculate procurement emissions. Carbon intensity is not dimensionally compatible with the purchased quantity unit.';
     }
 
     if (status === CarbonCalculationStatus.BLOCKED) {
@@ -363,39 +547,27 @@ export class CarbonService {
         inputQuantity: purchase.quantity,
         quantityUnit: purchase.unit,
         inputUnit: purchase.unit,
-        carbonFactor: Number(factorValue) || 0,
-        carbonFactorUnit: factorUnit,
-        normalizedCarbonIntensity: Number(factorValue) || 0,
-        normalizedUnit: factorUnit,
-        functionalUnit: claim?.normalizedData?.functionalUnit || product.unit,
-        lifecycleBoundary: claim?.normalizedData?.boundary || product.carbonData?.boundary || 'UNKNOWN',
-        reportingPeriod: claim?.normalizedData?.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod,
+        carbonFactor: factorValue,
+        carbonFactorUnit: factorUnit || undefined,
+        normalizedCarbonIntensity: normalizedIntensity?.normalizedValue,
+        normalizedUnit: normalizedIntensity?.normalizedUnit,
+        functionalUnit: factorFunctionalUnit,
+        lifecycleBoundary: factorBoundary,
+        reportingPeriod: factorReportingPeriod,
         factorSource,
         methodology,
-        totalEmissions: 0,
-        calculatedEmissions: 0,
         emissionsUnit: 'kgCO2e',
         status,
         evidenceStatus,
         claimId,
+        sourceReference,
         reason,
         calculationVersion: 1,
         calculatedAt: new Date(),
       });
     }
 
-    const normalized = normalizeCarbonData({
-      value: Number(factorValue),
-      unit: factorUnit,
-      functionalUnit: claim?.normalizedData?.functionalUnit || product.unit,
-      boundary: claim?.normalizedData?.boundary || product.carbonData?.boundary || 'UNKNOWN',
-      reportingPeriod: claim?.normalizedData?.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod,
-    });
-
-    const normalizedValue = normalized && typeof normalized.normalizedValue === 'number' && Number.isFinite(normalized.normalizedValue)
-      ? normalized.normalizedValue
-      : Number(factorValue);
-    totalEmissions = Number((purchase.quantity * normalizedValue).toFixed(6));
+    totalEmissions = Number((normalizedQuantity!.value * normalizedIntensity!.normalizedValue!).toFixed(6));
 
     const calculation = await CarbonCalculationModel.create({
       customerOrganizationId: params.customerOrgId,
@@ -408,13 +580,13 @@ export class CarbonService {
       inputQuantity: purchase.quantity,
       quantityUnit: purchase.unit,
       inputUnit: purchase.unit,
-      carbonFactor: Number(factorValue),
+      carbonFactor: factorValue!,
       carbonFactorUnit: factorUnit,
-      normalizedCarbonIntensity: normalized?.normalizedValue ?? Number(factorValue),
-      normalizedUnit: normalized?.normalizedUnit ?? factorUnit,
-      functionalUnit: normalized?.functionalUnit || claim?.normalizedData?.functionalUnit || product.unit,
-      lifecycleBoundary: normalized?.boundary || claim?.normalizedData?.boundary || product.carbonData?.boundary || 'UNKNOWN',
-      reportingPeriod: normalized?.reportingPeriod || claim?.normalizedData?.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod,
+      normalizedCarbonIntensity: normalizedIntensity!.normalizedValue,
+      normalizedUnit: normalizedIntensity!.normalizedUnit,
+      functionalUnit: normalizedIntensity!.functionalUnit,
+      lifecycleBoundary: normalizedIntensity!.boundary,
+      reportingPeriod: normalizedIntensity!.reportingPeriod,
       factorSource,
       methodology,
       totalEmissions,
@@ -423,6 +595,7 @@ export class CarbonService {
       status,
       evidenceStatus,
       claimId,
+      sourceReference,
       calculationVersion: 1,
       calculatedAt: new Date(),
     });
@@ -459,6 +632,7 @@ export class CarbonService {
     const supplier = await SupplierModel.findById(product.supplierId);
     if (!supplier) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
 
+    let canViewCarbon = true;
     if (user.organizationType === OrganizationType.SUPPLIER) {
       if (supplier.organizationId.toString() !== user.organizationId) {
         throw new AppError('You cannot access this product carbon profile', 403, 'FORBIDDEN');
@@ -470,11 +644,26 @@ export class CarbonService {
         status: { $ne: SupplierStatus.TERMINATED },
       });
       if (!relationship) throw new AppError('You cannot access this product carbon profile', 403, 'FORBIDDEN');
+      canViewCarbon = relationship.sharedDataPermissions.carbon === true;
     }
 
-    const claims = await ClaimModel.find({ productId }).sort({ createdAt: -1 });
+    const claims = canViewCarbon
+      ? await ClaimModel.find({
+          productId,
+          supplierId: supplier._id,
+          ...(user.organizationType === OrganizationType.CUSTOMER ? {
+            $or: [
+              { buyerOrganizationId: user.organizationId },
+              { buyerOrganizationId: { $exists: false } },
+              { buyerOrganizationId: null },
+            ],
+          } : {}),
+        }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 })
+      : [];
+    const productView = product.toObject();
+    if (!canViewCarbon || user.organizationType === OrganizationType.CUSTOMER) delete productView.carbonData;
     return {
-      product,
+      product: productView,
       supplier,
       latestClaim: claims[0] || null,
       claims,
@@ -486,6 +675,7 @@ export class CarbonService {
     const supplier = await SupplierModel.findById(supplierId);
     if (!supplier) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
 
+    let canViewCarbon = true;
     if (user.organizationType === OrganizationType.SUPPLIER) {
       if (supplier.organizationId.toString() !== user.organizationId) {
         throw new AppError('You cannot access this supplier carbon profile', 403, 'FORBIDDEN');
@@ -497,11 +687,23 @@ export class CarbonService {
         status: { $ne: SupplierStatus.TERMINATED },
       });
       if (!relationship) throw new AppError('You cannot access this supplier carbon profile', 403, 'FORBIDDEN');
+      canViewCarbon = relationship.sharedDataPermissions.carbon === true;
     }
 
     const [products, claims, certificates, dataRequests, questionResponses, organization] = await Promise.all([
       ProductModel.find({ supplierId: supplier._id }).sort({ name: 1 }),
-      ClaimModel.find({ supplierId: supplier._id }).sort({ createdAt: -1 }),
+      canViewCarbon
+        ? ClaimModel.find({
+            supplierId: supplier._id,
+            ...(user.organizationType === OrganizationType.CUSTOMER ? {
+              $or: [
+                { buyerOrganizationId: user.organizationId },
+                { buyerOrganizationId: { $exists: false } },
+                { buyerOrganizationId: null },
+              ],
+            } : {}),
+          }).sort({ createdAt: -1 })
+        : Promise.resolve([]),
       CertificateModel.find({ supplierId: supplier._id }).sort({ expiryDate: 1 }),
       DataRequestModel.find({ supplierOrganizationId: supplier.organizationId }).sort({ createdAt: -1 }),
       QuestionResponseModel.find({ supplierId: supplier._id }).sort({ submittedAt: -1 }),
@@ -510,27 +712,30 @@ export class CarbonService {
 
     const productIds = products.map((product) => product._id);
     const validClaims = claims.filter((claim): claim is typeof claim & { productId: string } => !!claim.productId && productIds.some((id) => id.toString() === claim.productId!.toString()));
-    const reportedCarbonIntensityValues = validClaims
-      .map((claim) => Number(claim.value))
-      .filter((value) => Number.isFinite(value));
+    const carbonClaims = validClaims.filter((claim) => /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i.test(claim.type));
+    const reportedCarbonIntensityValues = carbonClaims
+      .map((claim) => ({ value: finiteNonNegativeValue(claim.value), unit: claim.unit }))
+      .filter((entry): entry is { value: number; unit: string } => entry.value !== undefined && !!entry.unit)
+      .map((entry) => entry.value);
     const reportingPeriods = [...new Set(validClaims.map((claim) => claim.normalizedData?.reportingPeriod || claim.reportingPeriod).filter(Boolean))];
     const lifecycleBoundaries = [...new Set(validClaims.map((claim) => claim.normalizedData?.boundary || claim.boundary).filter(Boolean))];
     const functionalUnits = [...new Set(validClaims.map((claim) => claim.normalizedData?.functionalUnit || claim.unit).filter(Boolean))];
 
     const productSummary = products.map((product) => {
-      const relevantClaims = claims.filter((claim) => claim.productId?.toString() === product._id.toString());
+      const relevantClaims = carbonClaims.filter((claim) => claim.productId?.toString() === product._id.toString());
       const latestClaim = relevantClaims[0] || null;
-      const carbonIntensity = latestClaim ? Number(latestClaim.value) : product.carbonData?.pcf ?? null;
+      const carbonValue = latestClaim ? finiteNonNegativeValue(latestClaim.value) : undefined;
+      const carbonIntensity = latestClaim && latestClaim.unit ? carbonValue ?? null : null;
       const evidenceStatus = latestClaim ? latestClaim.status : 'NOT_AVAILABLE';
       const corroborationStatus = latestClaim?.status === ClaimStatus.CORROBORATED ? 'Corroborated' : latestClaim ? 'Not available' : 'Not available';
       const dataQualityStatus = latestClaim ? this.mapClaimStatusToQuality(latestClaim.status) : 'NOT_AVAILABLE';
       return {
         product: product.name,
-        unit: latestClaim?.unit || product.carbonData?.unit || product.unit,
+        unit: latestClaim?.unit || 'Unavailable',
         carbonIntensity: carbonIntensity ?? null,
-        functionalUnit: latestClaim?.normalizedData?.functionalUnit || product.unit,
-        lifecycleBoundary: latestClaim?.normalizedData?.boundary || product.carbonData?.boundary || 'UNKNOWN',
-        reportingPeriod: latestClaim?.normalizedData?.reportingPeriod || product.carbonData?.reportingPeriod || latestClaim?.reportingPeriod || 'UNKNOWN',
+        functionalUnit: latestClaim?.normalizedData?.functionalUnit || 'UNKNOWN',
+        lifecycleBoundary: latestClaim?.normalizedData?.boundary || latestClaim?.boundary || 'UNKNOWN',
+        reportingPeriod: latestClaim?.normalizedData?.reportingPeriod || latestClaim?.reportingPeriod || 'UNKNOWN',
         evidenceStatus,
         corroborationStatus,
         dataQualityStatus,
@@ -582,30 +787,30 @@ export class CarbonService {
     const metrics = {
       totalPurchasedQuantity: 0,
       totalCalculatedProcurementEmissions: 0,
-      totalProductsWithCarbonData: products.filter((product) => !!product.carbonData).length,
-      numberOfProductsWithCarbonData: products.filter((product) => !!product.carbonData).length,
-      productsWithMissingCarbonData: products.filter((product) => !product.carbonData).length,
-      supportedClaims: claims.filter((claim) => claim.status === ClaimStatus.SUPPORTED).length,
-      unsupportedClaims: claims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW).length,
-      inconsistentClaims: claims.filter((claim) => claim.status === ClaimStatus.INCONSISTENT).length,
-      corroboratedClaims: claims.filter((claim) => claim.status === ClaimStatus.CORROBORATED).length,
-      productsWithoutCarbonData: products.filter((product) => !product.carbonData).length,
-      missingEvidence: claims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW || claim.status === ClaimStatus.PENDING).length,
-      internallyConsistentClaims: claims.filter((claim) => claim.status === ClaimStatus.SUPPORTED || claim.status === ClaimStatus.CORROBORATED).length,
+      totalProductsWithCarbonData: new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
+      numberOfProductsWithCarbonData: new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
+      productsWithMissingCarbonData: products.length - new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
+      supportedClaims: carbonClaims.filter((claim) => claim.status === ClaimStatus.SUPPORTED).length,
+      unsupportedClaims: carbonClaims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW).length,
+      inconsistentClaims: carbonClaims.filter((claim) => claim.status === ClaimStatus.INCONSISTENT).length,
+      corroboratedClaims: carbonClaims.filter((claim) => claim.status === ClaimStatus.CORROBORATED).length,
+      productsWithoutCarbonData: products.length - new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
+      missingEvidence: carbonClaims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW || claim.status === ClaimStatus.PENDING).length,
+      internallyConsistentClaims: carbonClaims.filter((claim) => claim.status === ClaimStatus.PARTIALLY_SUPPORTED).length,
     };
 
     const dataQuality = {
-      SUPPORTED: claims.filter((claim) => claim.status === ClaimStatus.SUPPORTED).length,
-      CORROBORATED: claims.filter((claim) => claim.status === ClaimStatus.CORROBORATED).length,
-      INTERNALLY_CONSISTENT: claims.filter((claim) => claim.status === ClaimStatus.PARTIALLY_SUPPORTED || claim.status === ClaimStatus.SUPPORTED || claim.status === ClaimStatus.CORROBORATED).length,
-      INCONSISTENT: claims.filter((claim) => claim.status === ClaimStatus.INCONSISTENT).length,
-      UNSUPPORTED: claims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW).length,
-      NOT_AVAILABLE: Math.max(0, products.length - products.filter((product) => !!product.carbonData).length),
+      SUPPORTED: carbonClaims.filter((claim) => claim.status === ClaimStatus.SUPPORTED).length,
+      CORROBORATED: carbonClaims.filter((claim) => claim.status === ClaimStatus.CORROBORATED).length,
+      INTERNALLY_CONSISTENT: carbonClaims.filter((claim) => claim.status === ClaimStatus.PARTIALLY_SUPPORTED).length,
+      INCONSISTENT: carbonClaims.filter((claim) => claim.status === ClaimStatus.INCONSISTENT).length,
+      UNSUPPORTED: carbonClaims.filter((claim) => claim.status === ClaimStatus.UNSUPPORTED || claim.status === ClaimStatus.NEEDS_REVIEW).length,
+      NOT_AVAILABLE: Math.max(0, products.length - new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size),
     };
 
     const carbonData = {
-      numberOfProductsWithCarbonData: products.filter((product) => !!product.carbonData).length,
-      productsWithMissingCarbonData: products.filter((product) => !product.carbonData).length,
+      numberOfProductsWithCarbonData: new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
+      productsWithMissingCarbonData: products.length - new Set(carbonClaims.filter((claim) => finiteNonNegativeValue(claim.value) !== undefined && !!claim.unit).map((claim) => claim.productId!.toString())).size,
       reportedCarbonIntensityValues: reportedCarbonIntensityValues,
       reportingPeriods,
       lifecycleBoundaries,
@@ -634,19 +839,33 @@ export class CarbonService {
     };
 
     const trend = products.flatMap((product) => {
-      const productClaims = claims.filter((claim) => claim.productId?.toString() === product._id.toString());
+      const productClaims = carbonClaims.filter((claim) => claim.productId?.toString() === product._id.toString());
       if (productClaims.length < 2) return [];
 
       const comparableValues = productClaims
-        .map((claim) => ({
-          value: Number(claim.value),
-          unit: claim.unit || product.carbonData?.unit || 'kgCO2e/kg',
-          functionalUnit: claim.normalizedData?.functionalUnit || product.unit,
-          lifecycleBoundary: claim.normalizedData?.boundary || product.carbonData?.boundary || 'UNKNOWN',
-          reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod || product.carbonData?.reportingPeriod || 'UNKNOWN',
-          status: claim.status,
-        }))
-        .filter((entry) => Number.isFinite(entry.value));
+        .filter((claim) => [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED].includes(claim.status))
+        .map((claim) => {
+          const value = finiteNonNegativeValue(claim.value);
+          const normalized = value !== undefined && claim.unit
+            ? normalizeCarbonData({ value, unit: claim.unit })
+            : undefined;
+          return {
+            value: normalized?.normalizedValue,
+            unit: normalized?.normalizedUnit,
+            functionalUnit: claim.normalizedData?.functionalUnit,
+            lifecycleBoundary: claim.normalizedData?.boundary || claim.boundary,
+            reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod,
+            methodology: claim.methodology,
+          };
+        })
+        .filter((entry): entry is typeof entry & {
+          value: number;
+          unit: string;
+          functionalUnit: string;
+          lifecycleBoundary: string;
+          reportingPeriod: string;
+          methodology: string;
+        } => entry.value !== undefined && !!entry.unit && !!entry.functionalUnit && !!entry.lifecycleBoundary && !!entry.reportingPeriod && !!entry.methodology);
 
       if (!comparableValues.length) return [];
 
@@ -655,7 +874,7 @@ export class CarbonService {
         entry.unit === baseline.unit &&
         entry.functionalUnit === baseline.functionalUnit &&
         entry.lifecycleBoundary === baseline.lifecycleBoundary &&
-        entry.reportingPeriod !== 'UNKNOWN'
+        entry.methodology === baseline.methodology
       );
 
       if (values.length < 2) return [];
@@ -681,7 +900,11 @@ export class CarbonService {
         organization: organization ? organization.toObject() : null,
       },
       organization,
-      products,
+      products: canViewCarbon && user.organizationType === OrganizationType.SUPPLIER ? products : products.map((item) => {
+        const productView = item.toObject();
+        delete productView.carbonData;
+        return productView;
+      }),
       claims,
       metrics,
       carbonData,
@@ -719,60 +942,89 @@ export class CarbonService {
     const supplier = purchase.supplierId as any;
     if (!product || !supplier) throw new AppError('Purchase product or supplier is missing', 404, 'NOT_FOUND');
 
-    const claim = await ClaimModel.findOne({
+    const claimScope = {
       supplierId: supplier._id,
       productId: product._id,
-      status: { $in: [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED] },
-    }).sort({ createdAt: -1 });
-
-    const expectedIntensitySource = claim && Number.isFinite(Number(claim.value))
+      $or: [
+        { buyerOrganizationId: purchase.customerOrganizationId },
+        { buyerOrganizationId: { $exists: false } },
+        { buyerOrganizationId: null },
+      ],
+    };
+    const claim = await ClaimModel.findOne({
+      ...claimScope,
+      type: /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i,
+    }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 });
+    const relationship = user.organizationType === OrganizationType.SUPPLIER
+      ? undefined
+      : await SupplierRelationshipModel.findOne({
+          customerOrganizationId: purchase.customerOrganizationId,
+          supplierOrganizationId: purchase.supplierOrganizationId,
+          status: { $ne: SupplierStatus.TERMINATED },
+        });
+    const canViewCarbon = user.organizationType === OrganizationType.SUPPLIER
+      || relationship?.sharedDataPermissions.carbon === true;
+    const claimValue = finiteNonNegativeValue(claim?.value);
+    const eligibleClaim = canViewCarbon && claim
+      && [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(claim.status)
+      && claimValue !== undefined
+      && !!claim.unit
+      ? claim
+      : null;
+    const expectedIntensitySource = eligibleClaim
       ? {
-          value: Number(claim.value),
-          unit: claim.unit || product.unit,
-          functionalUnit: claim.normalizedData?.functionalUnit || product.unit,
-          boundary: claim.normalizedData?.boundary || claim.boundary || product.carbonData?.boundary || 'UNKNOWN',
-          reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod || 'UNKNOWN',
-          evidenceStatus: claim.status,
+          value: claimValue!,
+          unit: eligibleClaim.unit,
+          functionalUnit: eligibleClaim.normalizedData?.functionalUnit,
+          boundary: eligibleClaim.normalizedData?.boundary || eligibleClaim.boundary,
+          reportingPeriod: eligibleClaim.normalizedData?.reportingPeriod || eligibleClaim.reportingPeriod,
+          methodology: eligibleClaim.methodology,
+          evidenceStatus: eligibleClaim.status,
           source: 'claim',
+          claimId: eligibleClaim._id.toString(),
+          sourceReference: mapSourceReference(eligibleClaim.sourceReference),
         }
-      : product.carbonData && Number.isFinite(Number(product.carbonData.pcf))
-        ? {
-            value: Number(product.carbonData.pcf),
-            unit: product.carbonData.unit,
-            functionalUnit: product.unit,
-            boundary: product.carbonData.boundary || 'UNKNOWN',
-            reportingPeriod: product.carbonData.reportingPeriod || purchase.reportingPeriod || 'UNKNOWN',
-            evidenceStatus: product.carbonData.verificationStatus || ClaimStatus.PENDING,
-            source: 'product',
-          }
-        : null;
+      : null;
 
-    const actualCalculation = await CarbonCalculationModel.findOne({ purchaseId: purchase._id }).sort({ calculatedAt: -1 });
-    const actualIntensitySource = actualCalculation && Number.isFinite(Number(actualCalculation.normalizedCarbonIntensity ?? actualCalculation.carbonFactor))
+    const actualCalculation = await CarbonCalculationModel.findOne({ purchaseId: purchase._id })
+      .populate('sourceReference.documentId', 'filename')
+      .sort({ calculatedAt: -1 });
+    const actualValue = finiteNonNegativeValue(actualCalculation?.normalizedCarbonIntensity);
+    const actualIntensitySource = actualCalculation
+      && actualCalculation.status === CarbonCalculationStatus.CALCULATED
+      && [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(actualCalculation.evidenceStatus)
+      && actualValue !== undefined
+      && actualCalculation.normalizedUnit
       ? {
-          value: Number(actualCalculation.normalizedCarbonIntensity ?? actualCalculation.carbonFactor),
-          unit: actualCalculation.normalizedUnit ?? actualCalculation.carbonFactorUnit,
-          functionalUnit: actualCalculation.functionalUnit || product.unit,
-          boundary: actualCalculation.lifecycleBoundary || product.carbonData?.boundary || 'UNKNOWN',
-          reportingPeriod: actualCalculation.reportingPeriod || product.carbonData?.reportingPeriod || purchase.reportingPeriod || 'UNKNOWN',
-          evidenceStatus: actualCalculation.evidenceStatus || ClaimStatus.PENDING,
+          value: actualValue,
+          unit: actualCalculation.normalizedUnit,
+          functionalUnit: actualCalculation.functionalUnit,
+          boundary: actualCalculation.lifecycleBoundary,
+          reportingPeriod: actualCalculation.reportingPeriod,
+          methodology: actualCalculation.methodology,
+          evidenceStatus: actualCalculation.evidenceStatus,
           source: 'calculation',
+          sourceReference: mapSourceReference(actualCalculation.sourceReference),
         }
       : null;
 
     const result = calculateExpectedActualTracking({
       expectedQuantity: Number(purchase.quantity),
+      expectedQuantityUnit: purchase.unit,
       expectedCarbonIntensity: expectedIntensitySource?.value,
       expectedCarbonIntensityUnit: expectedIntensitySource?.unit,
       expectedFunctionalUnit: expectedIntensitySource?.functionalUnit,
       expectedBoundary: expectedIntensitySource?.boundary,
       expectedReportingPeriod: expectedIntensitySource?.reportingPeriod,
-      actualQuantity: actualCalculation ? Number(actualCalculation.quantity || purchase.quantity) : undefined,
+      expectedMethodology: expectedIntensitySource?.methodology,
+      actualQuantity: actualIntensitySource ? Number(actualCalculation!.quantity) : undefined,
+      actualQuantityUnit: actualIntensitySource ? actualCalculation!.quantityUnit : undefined,
       actualCarbonIntensity: actualIntensitySource?.value,
       actualCarbonIntensityUnit: actualIntensitySource?.unit,
       actualFunctionalUnit: actualIntensitySource?.functionalUnit,
       actualBoundary: actualIntensitySource?.boundary,
       actualReportingPeriod: actualIntensitySource?.reportingPeriod,
+      actualMethodology: actualIntensitySource?.methodology,
     });
 
     return {
@@ -798,26 +1050,35 @@ export class CarbonService {
       },
       expected: {
         quantity: Number(purchase.quantity),
+        quantityUnit: purchase.unit,
         carbonIntensity: expectedIntensitySource?.value,
         carbonIntensityUnit: expectedIntensitySource?.unit,
         functionalUnit: expectedIntensitySource?.functionalUnit,
         lifecycleBoundary: expectedIntensitySource?.boundary,
         reportingPeriod: expectedIntensitySource?.reportingPeriod,
+        methodology: expectedIntensitySource?.methodology,
         evidenceStatus: expectedIntensitySource?.evidenceStatus || ClaimStatus.PENDING,
         carbonDataSource: expectedIntensitySource?.source || 'UNAVAILABLE',
+        claimId: expectedIntensitySource?.claimId,
+        sourceReference: expectedIntensitySource?.sourceReference,
         emissions: result.expectedEmissions,
       },
       actual: {
-        quantity: actualCalculation ? Number(actualCalculation.quantity || purchase.quantity) : undefined,
+        quantity: actualIntensitySource ? Number(actualCalculation!.quantity) : undefined,
+        quantityUnit: actualIntensitySource ? actualCalculation!.quantityUnit : undefined,
         carbonIntensity: actualIntensitySource?.value,
         carbonIntensityUnit: actualIntensitySource?.unit,
         functionalUnit: actualIntensitySource?.functionalUnit,
         lifecycleBoundary: actualIntensitySource?.boundary,
         reportingPeriod: actualIntensitySource?.reportingPeriod,
+        methodology: actualIntensitySource?.methodology,
         evidenceStatus: actualIntensitySource?.evidenceStatus || ClaimStatus.PENDING,
         carbonDataSource: actualIntensitySource?.source || 'UNAVAILABLE',
+        sourceReference: actualIntensitySource?.sourceReference,
+        factorSource: actualIntensitySource ? actualCalculation?.factorSource : undefined,
         emissions: result.actualEmissions,
-        calculationVersion: actualCalculation?.calculationVersion ?? 1,
+        calculationId: actualIntensitySource ? actualCalculation?._id.toString() : undefined,
+        calculationVersion: actualIntensitySource ? actualCalculation?.calculationVersion : undefined,
       },
       status: result.status,
       variance: result.variance,
@@ -838,21 +1099,53 @@ export class CarbonService {
       .populate('supplierId')
       .sort({ purchaseDate: -1 });
 
-    const records = await Promise.all(purchases.map((purchase) => this.getPurchaseCarbonTracking(purchase._id.toString(), user).catch(() => null)));
-    const validRecords = records.filter((record): record is NonNullable<typeof record> => !!record);
+    const validRecords = await Promise.all(purchases.map((purchase) => this.getPurchaseCarbonTracking(purchase._id.toString(), user)));
 
-    const totalExpected = validRecords.reduce((sum, record) => sum + (record.expected.emissions ?? 0), 0);
-    const totalActual = validRecords.reduce((sum, record) => sum + (record.actual.emissions ?? 0), 0);
-    const totalVariance = validRecords.reduce((sum, record) => sum + (record.variance ?? 0), 0);
+    const totalExpected = sumForSingleCarbonBasis(validRecords.map((record) => ({
+      emissions: record.expected.emissions,
+      carbonIntensityUnit: record.expected.carbonIntensityUnit,
+      functionalUnit: record.expected.functionalUnit,
+      lifecycleBoundary: record.expected.lifecycleBoundary,
+      reportingPeriod: record.expected.reportingPeriod,
+      methodology: record.expected.methodology,
+    })));
+    const totalActual = sumForSingleCarbonBasis(validRecords.map((record) => ({
+      emissions: record.actual.emissions,
+      carbonIntensityUnit: record.actual.carbonIntensityUnit,
+      functionalUnit: record.actual.functionalUnit,
+      lifecycleBoundary: record.actual.lifecycleBoundary,
+      reportingPeriod: record.actual.reportingPeriod,
+      methodology: record.actual.methodology,
+    })));
     const comparableRecords = validRecords.filter((record) => record.status === 'COMPLETE');
-    const variancePercent = totalExpected !== 0 ? (totalVariance / totalExpected) * 100 : 0;
+    const completeBases = new Set(comparableRecords.map((record) => carbonBasis({
+      carbonIntensityUnit: record.expected.carbonIntensityUnit,
+      functionalUnit: record.expected.functionalUnit,
+      lifecycleBoundary: record.expected.lifecycleBoundary,
+      reportingPeriod: record.expected.reportingPeriod,
+      methodology: record.expected.methodology,
+    })));
+    const comparableExpected = sumForSingleCarbonBasis(comparableRecords.map((record) => ({
+      emissions: record.expected.emissions,
+      carbonIntensityUnit: record.expected.carbonIntensityUnit,
+      functionalUnit: record.expected.functionalUnit,
+      lifecycleBoundary: record.expected.lifecycleBoundary,
+      reportingPeriod: record.expected.reportingPeriod,
+      methodology: record.expected.methodology,
+    })));
+    const totalVariance = comparableRecords.length > 0 && completeBases.size === 1
+      ? comparableRecords.reduce((sum, record) => sum + (record.variance ?? 0), 0)
+      : undefined;
+    const variancePercent = totalVariance !== undefined && comparableExpected !== undefined && comparableExpected !== 0
+      ? (totalVariance / comparableExpected) * 100
+      : undefined;
 
     return {
       summary: {
-        totalExpectedEmissions: Number(totalExpected.toFixed(6)),
-        totalActualEmissions: Number(totalActual.toFixed(6)),
-        totalVariance: Number(totalVariance.toFixed(6)),
-        variancePercent: Number(variancePercent.toFixed(4)),
+        totalExpectedEmissions: totalExpected ?? null,
+        totalActualEmissions: totalActual ?? null,
+        totalVariance: totalVariance === undefined ? null : Number(totalVariance.toFixed(6)),
+        variancePercent: variancePercent === undefined ? null : Number(variancePercent.toFixed(4)),
         trackedPurchaseCount: validRecords.length,
         expectedOnlyCount: validRecords.filter((record) => record.status === 'EXPECTED_ONLY').length,
         actualOnlyCount: validRecords.filter((record) => record.status === 'ACTUAL_ONLY').length,
@@ -898,6 +1191,10 @@ export class CarbonService {
       throw new AppError('You cannot compare these suppliers', 403, 'FORBIDDEN');
     }
 
+    const relationshipByOrganizationId = new Map(relationships.map((relationship) => [
+      relationship.supplierOrganizationId.toString(),
+      relationship,
+    ]));
     const organizationById = new Map((await OrganizationModel.find({ _id: { $in: organizationIds } })).map((organization) => [organization._id.toString(), organization]));
     const suppliers = await Promise.all(uniqueSupplierIds.map(async (supplierId) => {
       const supplier = supplierRecords.find((record) => record._id.toString() === supplierId);
@@ -909,7 +1206,20 @@ export class CarbonService {
       });
       if (!candidateProduct) return null;
 
-      const claim = await ClaimModel.findOne({ productId: candidateProduct._id }).sort({ createdAt: -1 });
+      const relationship = relationshipByOrganizationId.get(supplier.organizationId.toString());
+      const canViewCarbon = relationship?.sharedDataPermissions.carbon === true;
+      const claim = canViewCarbon
+        ? await ClaimModel.findOne({
+            productId: candidateProduct._id,
+            supplierId: supplier._id,
+            type: /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i,
+            $or: [
+              { buyerOrganizationId: params.user.organizationId },
+              { buyerOrganizationId: { $exists: false } },
+              { buyerOrganizationId: null },
+            ],
+          }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 })
+        : null;
       const purchaseRows = await PurchaseModel.find({
         customerOrganizationId: params.user.organizationId,
         supplierId: supplier._id,
@@ -917,11 +1227,32 @@ export class CarbonService {
       }).sort({ purchaseDate: -1 });
 
       const purchaseCount = purchaseRows.length;
-      const totalQuantity = purchaseRows.reduce((sum, purchase) => sum + Number(purchase.quantity || 0), 0);
+      const normalizedPurchaseQuantities = purchaseRows.map((purchase) => {
+        const quantity = finiteNonNegativeValue(purchase.quantity);
+        return quantity !== undefined && purchase.unit
+          ? normalizeUnitValue(quantity, purchase.unit)
+          : undefined;
+      });
+      const quantityUnits = new Set(normalizedPurchaseQuantities.map((quantity) => quantity?.unit));
+      const totalQuantity = purchaseRows.length > 0
+        && normalizedPurchaseQuantities.every((quantity) => quantity !== undefined)
+        && quantityUnits.size === 1
+        ? Number(normalizedPurchaseQuantities.reduce((sum, quantity) => sum + quantity!.value, 0).toFixed(6))
+        : null;
+      const totalQuantityUnit = totalQuantity !== null ? normalizedPurchaseQuantities[0]?.unit || null : null;
       const lastPurchase = purchaseRows[0];
-      const latestPrice = purchaseRows.find((purchase) => purchase.unitPrice != null && Number(purchase.unitPrice) > 0);
-      const pricePerUnit = latestPrice ? Number(latestPrice.unitPrice) : candidateProduct.sellingPrice ?? null;
-      const priceCurrency = latestPrice?.currency || candidateProduct.currency || undefined;
+      const latestPrice = purchaseRows.find((purchase) => {
+        const price = finiteNonNegativeValue(purchase.unitPrice?.toString());
+        return price !== undefined;
+      });
+      const currentPrice = finiteNonNegativeValue(candidateProduct.sellingPrice);
+      const baseQuantity = normalizeUnitValue(1, product.unit);
+      const candidateQuantity = normalizeUnitValue(1, candidateProduct.unit);
+      const pricePerUnit = currentPrice !== undefined && baseQuantity && candidateQuantity
+        && baseQuantity.unit === candidateQuantity.unit
+        ? Number((currentPrice * baseQuantity.value / candidateQuantity.value).toFixed(6))
+        : null;
+      const priceCurrency = pricePerUnit !== null ? candidateProduct.currency || undefined : undefined;
 
       const dataRequests = await DataRequestModel.find({ supplierOrganizationId: supplier.organizationId });
       const requestedItems = dataRequests.flatMap((request) => (request.requestedItems || []).map((item) => ({
@@ -942,13 +1273,28 @@ export class CarbonService {
       const latestCertificate = certificates[0];
       const evidenceStatus = claim?.status || 'NOT_AVAILABLE';
       const corroborationStatus = claim && claim.status === ClaimStatus.CORROBORATED ? 'CORROBORATED' : 'NOT_AVAILABLE';
-      const comparableCarbon = claim && claim.value !== undefined && claim.unit ? {
-        value: Number(claim.value),
-        unit: claim.unit,
-        functionalUnit: claim.normalizedData?.functionalUnit || candidateProduct.unit,
-        boundary: claim.normalizedData?.boundary || claim.boundary || candidateProduct.carbonData?.boundary || 'UNKNOWN',
-        reportingPeriod: claim.normalizedData?.reportingPeriod || claim.reportingPeriod || candidateProduct.carbonData?.reportingPeriod || 'UNKNOWN',
-      } : null;
+      const rawIntensity = finiteNonNegativeValue(claim?.value);
+      const normalizedCarbon = rawIntensity !== undefined && claim?.unit
+        ? normalizeCarbonData({ value: rawIntensity, unit: claim.unit })
+        : undefined;
+      const comparableCarbon = claim
+        && [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED].includes(claim.status)
+        && normalizedCarbon
+        && normalizedCarbon.normalizedValue !== undefined
+        && !!normalizedCarbon.normalizedUnit
+        && claim.normalizedData?.functionalUnit
+        && (claim.normalizedData?.boundary || claim.boundary)
+        && (claim.normalizedData?.reportingPeriod || claim.reportingPeriod)
+        && claim.methodology
+        ? {
+            value: normalizedCarbon.normalizedValue,
+            unit: normalizedCarbon.normalizedUnit,
+            functionalUnit: claim.normalizedData.functionalUnit,
+            boundary: claim.normalizedData.boundary || claim.boundary,
+            reportingPeriod: claim.normalizedData.reportingPeriod || claim.reportingPeriod,
+            methodology: claim.methodology,
+          }
+        : null;
 
       return {
         supplierId: supplier._id.toString(),
@@ -960,12 +1306,14 @@ export class CarbonService {
         unit: candidateProduct.unit,
         pricePerUnit,
         currency: priceCurrency,
-        priceSource: latestPrice ? 'Purchasing history' : (candidateProduct.sellingPrice != null ? 'Product price' : 'N/A'),
-        carbonIntensity: claim ? Number(claim.value) : null,
-        carbonUnit: claim?.unit || candidateProduct.carbonData?.unit || null,
-        functionalUnit: claim?.normalizedData?.functionalUnit || candidateProduct.unit,
-        lifecycleBoundary: claim?.normalizedData?.boundary || claim?.boundary || candidateProduct.carbonData?.boundary || 'UNKNOWN',
-        reportingPeriod: claim?.normalizedData?.reportingPeriod || claim?.reportingPeriod || candidateProduct.carbonData?.reportingPeriod || 'UNKNOWN',
+        priceSource: pricePerUnit !== null ? 'Current product price' : 'NOT_AVAILABLE',
+        carbonIntensity: rawIntensity ?? null,
+        carbonUnit: claim?.unit || null,
+        functionalUnit: claim?.normalizedData?.functionalUnit,
+        lifecycleBoundary: claim?.normalizedData?.boundary || claim?.boundary,
+        reportingPeriod: claim?.normalizedData?.reportingPeriod || claim?.reportingPeriod,
+        methodology: claim?.methodology,
+        sourceReference: mapSourceReference(claim?.sourceReference),
         evidenceStatus,
         corroborationStatus,
         carbonStatus: comparableCarbon ? 'AVAILABLE' : 'NOT_AVAILABLE',
@@ -980,14 +1328,18 @@ export class CarbonService {
         purchaseHistory: {
           count: purchaseCount,
           totalQuantity,
-          lastPurchaseDate: lastPurchase?.purchaseDate || null,
-          lastPrice: latestPrice ? Number(latestPrice.unitPrice) : null,
-          currency: lastPurchase?.currency || priceCurrency || null,
+          totalQuantityUnit,
+          lastPurchaseDate: latestPrice?.purchaseDate || lastPurchase?.purchaseDate || null,
+          lastPrice: latestPrice ? finiteNonNegativeValue(latestPrice.unitPrice?.toString()) ?? null : null,
+          currency: latestPrice ? latestPrice.currency : null,
         },
         warnings: [
           ...(claim && claim.status === ClaimStatus.INCONSISTENT ? ['Evidence issue: this supplier carbon claim is internally inconsistent.'] : []),
           ...(claim && [ClaimStatus.UNSUPPORTED, ClaimStatus.NEEDS_REVIEW].includes(claim.status) ? ['Carbon evidence is unsupported or requires review.'] : []),
+          ...(claim && !comparableCarbon && ![ClaimStatus.UNSUPPORTED, ClaimStatus.NEEDS_REVIEW, ClaimStatus.INCONSISTENT].includes(claim.status) ? ['Carbon data is not eligible for direct comparison because support or required PCF metadata is unavailable.'] : []),
           ...(!claim ? ['Carbon data unavailable.'] : []),
+          ...(!canViewCarbon ? ['Carbon data is not shared with this buyer.'] : []),
+          ...(pricePerUnit === null && latestPrice ? ['Historical purchase pricing is shown separately; a current product price is unavailable.'] : []),
         ],
         comparableCarbon,
       };
@@ -997,36 +1349,61 @@ export class CarbonService {
     if (!rows.length) throw new AppError('No supplier comparisons available', 404, 'NOT_FOUND');
 
     const warnings: string[] = [];
-    const comparableRows = rows.filter((row) => row.comparableCarbon && row.comparableCarbon.value !== null && row.comparableCarbon.value !== undefined);
-    if (comparableRows.length > 1) {
-      const baseline = comparableRows[0];
-      for (const row of comparableRows.slice(1)) {
-        const comparable = areComparablePcfValues(baseline.comparableCarbon!, row.comparableCarbon!);
-        if (!comparable) {
-          warnings.push(`Not directly comparable — lifecycle or unit differences exist for ${row.supplierName}.`);
-        }
-      }
+    const comparableRows = rows.filter((row): row is typeof row & {
+      comparableCarbon: NonNullable<typeof row.comparableCarbon> & {
+        value: number;
+        unit: string;
+        functionalUnit: string;
+        boundary: string;
+        reportingPeriod: string;
+        methodology: string;
+      };
+    } => !!row.comparableCarbon
+      && row.comparableCarbon.value !== undefined
+      && !!row.comparableCarbon.unit
+      && !!row.comparableCarbon.functionalUnit
+      && !!row.comparableCarbon.boundary
+      && !!row.comparableCarbon.reportingPeriod
+      && !!row.comparableCarbon.methodology);
+    const comparisonGroups = new Map<string, typeof comparableRows>();
+    for (const row of comparableRows) {
+      const carbon = row.comparableCarbon!;
+      const key = [
+        normalizeText(carbon.unit),
+        normalizeText(carbon.functionalUnit),
+        normalizeText(carbon.boundary),
+        normalizeText(carbon.reportingPeriod),
+        normalizeText(carbon.methodology),
+      ].join('|');
+      comparisonGroups.set(key, [...(comparisonGroups.get(key) || []), row]);
+    }
+    const largestComparableGroup = [...comparisonGroups.values()].sort((left, right) => right.length - left.length)[0] || [];
+    if (comparableRows.length > largestComparableGroup.length) {
+      warnings.push('Some supported carbon claims were excluded because their units, functional units, lifecycle boundaries, reporting periods, or methodologies differ.');
     }
 
     let tradeOff;
-    if (params.quantity && params.quantity > 0 && rows.length >= 2) {
-      const cheapest = rows.reduce((current, row) => row.pricePerUnit !== null && (current.pricePerUnit === null || row.pricePerUnit < current.pricePerUnit) ? row : current, rows[0]);
-      const cheapestCarbon = rows.filter((row) => row.comparableCarbon).sort((left, right) => (left.comparableCarbon?.value ?? Number.MAX_SAFE_INTEGER) - (right.comparableCarbon?.value ?? Number.MAX_SAFE_INTEGER))[0];
-      if (cheapest && cheapestCarbon && cheapest !== cheapestCarbon) {
-        const cheapestEmissions = cheapestCarbon.comparableCarbon ? cheapestCarbon.comparableCarbon.value * params.quantity : undefined;
-        const cheapestCost = cheapest.pricePerUnit !== null ? cheapest.pricePerUnit * params.quantity : undefined;
-        const expensiveRow = rows.find((row) => row.supplierId !== cheapest.supplierId && row.pricePerUnit !== null);
-        const expensiveCost = expensiveRow && expensiveRow.pricePerUnit !== null ? expensiveRow.pricePerUnit * params.quantity : undefined;
-        if (cheapestCost !== undefined && expensiveCost !== undefined && cheapestEmissions !== undefined) {
-          const costDifference = expensiveCost - cheapestCost;
-          const emissionDifference = (expensiveRow?.comparableCarbon?.value ?? 0) * params.quantity - cheapestEmissions;
+    const pricedComparableRows = largestComparableGroup.filter((row) => row.pricePerUnit !== null && row.currency);
+    const currencies = new Set(pricedComparableRows.map((row) => row.currency));
+    if (Number.isFinite(params.quantity) && params.quantity! > 0 && pricedComparableRows.length >= 2 && currencies.size === 1) {
+      const cheapest = [...pricedComparableRows].sort((left, right) => left.pricePerUnit! - right.pricePerUnit!)[0];
+      const lowestEmissions = [...pricedComparableRows].sort((left, right) => left.comparableCarbon!.value - right.comparableCarbon!.value)[0];
+      if (cheapest && lowestEmissions && cheapest !== lowestEmissions) {
+        const cheapestEmissions = calculateCarbonEmissions(params.quantity!, product.unit, lowestEmissions.comparableCarbon!.value, lowestEmissions.comparableCarbon!.unit);
+        const comparisonEmissions = calculateCarbonEmissions(params.quantity!, product.unit, cheapest.comparableCarbon!.value, cheapest.comparableCarbon!.unit);
+        const cheapestCost = cheapest.pricePerUnit! * params.quantity!;
+        const comparisonCost = lowestEmissions.pricePerUnit! * params.quantity!;
+        if (cheapestEmissions !== undefined && comparisonEmissions !== undefined) {
+          const costDifference = comparisonCost - cheapestCost;
+          const emissionDifference = comparisonEmissions - cheapestEmissions;
           tradeOff = {
-            quantity: params.quantity,
+            quantity: params.quantity!,
             unit: product.unit,
             cheapestSupplier: cheapest.supplierName,
             lowestCost: cheapestCost,
-            comparisonSupplier: expensiveRow?.supplierName || null,
+            comparisonSupplier: lowestEmissions.supplierName,
             costDifference,
+            currency: cheapest.currency,
             emissionDifference,
             costPerEstimatedTonneAvoided: emissionDifference !== 0 ? Math.abs(costDifference) / (Math.abs(emissionDifference) / 1000) : undefined,
           };
@@ -1046,7 +1423,7 @@ export class CarbonService {
       warnings,
       tradeOff,
       comparability: {
-        directlyComparableCount: rows.filter((row) => row.comparableCarbon).length,
+        directlyComparableCount: largestComparableGroup.length > 1 ? largestComparableGroup.length : 0,
         totalSuppliers: rows.length,
       },
     };
@@ -1067,7 +1444,7 @@ export class CarbonService {
     if (!leftSupplier || !rightSupplier) throw new AppError('Supplier not found', 404, 'NOT_FOUND');
 
     if (params.user.organizationType === OrganizationType.SUPPLIER) {
-      if (leftSupplier.organizationId.toString() !== params.user.organizationId && rightSupplier.organizationId.toString() !== params.user.organizationId) {
+      if (leftSupplier.organizationId.toString() !== params.user.organizationId || rightSupplier.organizationId.toString() !== params.user.organizationId) {
         throw new AppError('You cannot compare these products', 403, 'FORBIDDEN');
       }
     } else {
@@ -1084,8 +1461,37 @@ export class CarbonService {
       if (!leftRelationship || !rightRelationship) throw new AppError('You cannot compare these products', 403, 'FORBIDDEN');
     }
 
-    const leftClaim = await ClaimModel.findOne({ productId: leftProduct._id, status: { $in: [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED] } }).sort({ createdAt: -1 });
-    const rightClaim = await ClaimModel.findOne({ productId: rightProduct._id, status: { $in: [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED] } }).sort({ createdAt: -1 });
+    const buyerClaimFilter = {
+      $or: [
+        { buyerOrganizationId: params.user.organizationId },
+        { buyerOrganizationId: { $exists: false } },
+        { buyerOrganizationId: null },
+      ],
+    };
+    const leftRelationship = params.user.organizationType === OrganizationType.SUPPLIER
+      ? undefined
+      : await SupplierRelationshipModel.findOne({
+          customerOrganizationId: params.user.organizationId,
+          supplierOrganizationId: leftSupplier.organizationId,
+          status: { $ne: SupplierStatus.TERMINATED },
+        });
+    const rightRelationship = params.user.organizationType === OrganizationType.SUPPLIER
+      ? undefined
+      : await SupplierRelationshipModel.findOne({
+          customerOrganizationId: params.user.organizationId,
+          supplierOrganizationId: rightSupplier.organizationId,
+          status: { $ne: SupplierStatus.TERMINATED },
+        });
+    const canViewLeftCarbon = params.user.organizationType === OrganizationType.SUPPLIER
+      || leftRelationship?.sharedDataPermissions.carbon === true;
+    const canViewRightCarbon = params.user.organizationType === OrganizationType.SUPPLIER
+      || rightRelationship?.sharedDataPermissions.carbon === true;
+    const leftClaim = canViewLeftCarbon
+      ? await ClaimModel.findOne({ productId: leftProduct._id, supplierId: leftSupplier._id, type: /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i, ...buyerClaimFilter }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 })
+      : null;
+    const rightClaim = canViewRightCarbon
+      ? await ClaimModel.findOne({ productId: rightProduct._id, supplierId: rightSupplier._id, type: /PCF|CARBON[_ ]?FOOTPRINT|CARBON[_ ]?INTENSITY/i, ...buyerClaimFilter }).populate('sourceReference.documentId', 'filename').sort({ createdAt: -1 })
+      : null;
 
     if (!leftClaim || !rightClaim) {
       return {
@@ -1094,62 +1500,120 @@ export class CarbonService {
       };
     }
 
+    const leftValue = finiteNonNegativeValue(leftClaim.value);
+    const rightValue = finiteNonNegativeValue(rightClaim.value);
+    const leftNormalized = leftValue !== undefined && leftClaim.unit
+      ? normalizeCarbonData({ value: leftValue, unit: leftClaim.unit })
+      : undefined;
+    const rightNormalized = rightValue !== undefined && rightClaim.unit
+      ? normalizeCarbonData({ value: rightValue, unit: rightClaim.unit })
+      : undefined;
     const leftComparable = {
-      unit: leftClaim.unit || leftProduct.carbonData?.unit || 'kgCO2e/kg',
-      functionalUnit: leftClaim.normalizedData?.functionalUnit || leftProduct.unit,
-      boundary: leftClaim.normalizedData?.boundary || leftProduct.carbonData?.boundary || 'UNKNOWN',
-      reportingPeriod: leftClaim.normalizedData?.reportingPeriod || leftProduct.carbonData?.reportingPeriod || 'UNKNOWN',
+      unit: leftNormalized?.normalizedUnit || '',
+      functionalUnit: leftClaim.normalizedData?.functionalUnit,
+      boundary: leftClaim.normalizedData?.boundary || leftClaim.boundary,
+      reportingPeriod: leftClaim.normalizedData?.reportingPeriod || leftClaim.reportingPeriod,
+      methodology: leftClaim.methodology,
     };
     const rightComparable = {
-      unit: rightClaim.unit || rightProduct.carbonData?.unit || 'kgCO2e/kg',
-      functionalUnit: rightClaim.normalizedData?.functionalUnit || rightProduct.unit,
-      boundary: rightClaim.normalizedData?.boundary || rightProduct.carbonData?.boundary || 'UNKNOWN',
-      reportingPeriod: rightClaim.normalizedData?.reportingPeriod || rightProduct.carbonData?.reportingPeriod || 'UNKNOWN',
+      unit: rightNormalized?.normalizedUnit || '',
+      functionalUnit: rightClaim.normalizedData?.functionalUnit,
+      boundary: rightClaim.normalizedData?.boundary || rightClaim.boundary,
+      reportingPeriod: rightClaim.normalizedData?.reportingPeriod || rightClaim.reportingPeriod,
+      methodology: rightClaim.methodology,
     };
-
-    const comparable = areComparablePcfValues(leftComparable, rightComparable);
+    const leftEligible = [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED].includes(leftClaim.status)
+      && leftNormalized !== undefined;
+    const rightEligible = [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED].includes(rightClaim.status)
+      && rightNormalized !== undefined;
+    const comparable = leftEligible && rightEligible
+      && areComparablePcfValues(leftComparable, rightComparable, true);
     const warnings: string[] = [];
     if (!comparable) {
       if (normalizeText(leftComparable.functionalUnit) !== normalizeText(rightComparable.functionalUnit)) warnings.push('Different functional units');
       if (normalizeText(leftComparable.boundary) !== normalizeText(rightComparable.boundary)) warnings.push('Different life-cycle boundaries');
       if (normalizeText(leftComparable.reportingPeriod) !== normalizeText(rightComparable.reportingPeriod)) warnings.push('Different reporting years');
-      if (leftClaim.status === ClaimStatus.UNSUPPORTED || rightClaim.status === ClaimStatus.UNSUPPORTED) warnings.push('Carbon value is unsupported');
+      if (normalizeText(leftComparable.methodology) !== normalizeText(rightComparable.methodology)) warnings.push('Methodologies differ or are missing');
+      if (!leftEligible || !rightEligible) warnings.push('Carbon data is not eligible for comparison because a supported carbon claim is unavailable.');
     }
 
-    const leftValue = Number(leftClaim.value) || 0;
-    const rightValue = Number(rightClaim.value) || 0;
-    const absoluteDifference = Math.abs(leftValue - rightValue);
-    const relativeDifference = leftValue === 0 ? 0 : (absoluteDifference / leftValue) * 100;
+    const normalizedLeftValue = comparable ? leftNormalized!.normalizedValue : undefined;
+    const normalizedRightValue = comparable ? rightNormalized!.normalizedValue : undefined;
+    const absoluteDifference = normalizedLeftValue !== undefined && normalizedRightValue !== undefined
+      ? Math.abs(normalizedLeftValue - normalizedRightValue)
+      : undefined;
+    const relativeDifference = normalizedLeftValue !== undefined && normalizedRightValue !== undefined && normalizedLeftValue !== 0
+      ? (absoluteDifference! / normalizedLeftValue) * 100
+      : undefined;
+    const leftQuantity = params.quantity === undefined ? undefined : normalizeUnitValue(params.quantity, leftProduct.unit);
+    const rightUnit = normalizeUnitValue(1, rightProduct.unit);
+    const rightQuantity = leftQuantity && rightUnit && leftQuantity.unit === rightUnit.unit
+      ? leftQuantity.value / rightUnit.value
+      : undefined;
+    const leftEmissions = comparable && params.quantity !== undefined
+      ? calculateCarbonEmissions(params.quantity, leftProduct.unit, normalizedLeftValue!, leftComparable.unit)
+      : undefined;
+    const rightEmissions = comparable && rightQuantity !== undefined
+      ? calculateCarbonEmissions(rightQuantity, rightProduct.unit, normalizedRightValue!, rightComparable.unit)
+      : undefined;
+    const estimatedDifferenceForQuantity = leftEmissions !== undefined && rightEmissions !== undefined
+      ? Math.abs(leftEmissions - rightEmissions)
+      : undefined;
 
     return {
       status: comparable ? 'COMPARABLE' : 'NOT_DIRECTLY_COMPARABLE',
       comparable,
       warnings,
-      left: { supplier: leftSupplier, product: leftProduct, claim: leftClaim, value: leftValue, unit: leftComparable.unit },
-      right: { supplier: rightSupplier, product: rightProduct, claim: rightClaim, value: rightValue, unit: rightComparable.unit },
+      left: { supplier: leftSupplier, product: leftProduct, claim: leftClaim, value: normalizedLeftValue, unit: leftComparable.unit },
+      right: { supplier: rightSupplier, product: rightProduct, claim: rightClaim, value: normalizedRightValue, unit: rightComparable.unit },
       absoluteDifference,
       relativeDifference,
       purchaseQuantity: params.quantity ?? 0,
-      estimatedDifferenceForQuantity: params.quantity ? Math.abs((leftValue - rightValue) * params.quantity) : undefined,
+      estimatedDifferenceForQuantity: estimatedDifferenceForQuantity !== undefined && Number.isFinite(estimatedDifferenceForQuantity)
+        ? Number(estimatedDifferenceForQuantity.toFixed(6))
+        : undefined,
     };
   }
 
   async getDashboard(user: NonNullable<Request['user']>) {
     const calculations = await CarbonCalculationModel.find({ customerOrganizationId: user.organizationId }).sort({ calculatedAt: -1 });
     const purchases = await PurchaseModel.find({ customerOrganizationId: user.organizationId });
-    const totalProcurementEmissions = calculations
-      .filter((calculation) => calculation.status === CarbonCalculationStatus.CALCULATED)
-      .reduce((sum, calculation) => sum + Number(calculation.totalEmissions || 0), 0);
+    const latestByPurchase = new Map<string, typeof calculations[number]>();
+    for (const calculation of calculations) {
+      const purchaseId = calculation.purchaseId.toString();
+      if (!latestByPurchase.has(purchaseId)) latestByPurchase.set(purchaseId, calculation);
+    }
+    const latestCalculations = [...latestByPurchase.values()];
+    const calculatedRecords = latestCalculations.filter((calculation) =>
+      calculation.status === CarbonCalculationStatus.CALCULATED
+      && [ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(calculation.evidenceStatus)
+      && finiteNonNegativeValue(calculation.totalEmissions) !== undefined
+    );
+    const totalProcurementEmissions = sumForSingleCarbonBasis(calculatedRecords.map((calculation) => ({
+      emissions: finiteNonNegativeValue(calculation.totalEmissions),
+      carbonIntensityUnit: calculation.normalizedUnit,
+      functionalUnit: calculation.functionalUnit,
+      lifecycleBoundary: calculation.lifecycleBoundary,
+      reportingPeriod: calculation.reportingPeriod,
+      methodology: calculation.methodology === 'Not provided' ? undefined : calculation.methodology,
+    })));
+    const calculationPurchaseIds = new Set(calculatedRecords.map((calculation) => calculation.purchaseId.toString()));
+    const supportedProductIds = new Set(calculatedRecords
+      .filter((calculation) => calculation.evidenceStatus === ClaimStatus.SUPPORTED || calculation.evidenceStatus === ClaimStatus.CORROBORATED)
+      .map((calculation) => calculation.productId.toString()));
 
     const metrics = {
-      totalProcurementEmissions,
-      totalPurchasesWithCarbonData: calculations.length,
-      productsWithSupportedCarbonData: calculations.filter((calculation) => calculation.evidenceStatus === ClaimStatus.SUPPORTED).length,
-      productsRequiringVerification: calculations.filter((calculation) => calculation.evidenceStatus === ClaimStatus.PENDING || calculation.evidenceStatus === ClaimStatus.NEEDS_REVIEW).length,
-      purchasesMissingCarbonData: purchases.filter((purchase) => !purchase.carbonCalculationId).length,
+      totalProcurementEmissions: totalProcurementEmissions ?? null,
+      totalPurchasesWithCarbonData: calculatedRecords.length,
+      productsWithSupportedCarbonData: supportedProductIds.size,
+      productsRequiringVerification: latestCalculations.filter((calculation) =>
+        calculation.status !== CarbonCalculationStatus.CALCULATED
+        || ![ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED, ClaimStatus.PARTIALLY_SUPPORTED].includes(calculation.evidenceStatus)
+      ).length,
+      purchasesMissingCarbonData: purchases.filter((purchase) => !calculationPurchaseIds.has(purchase._id.toString())).length,
     };
 
-    if (!calculations.length && !purchases.length) {
+    if (!latestCalculations.length && !purchases.length) {
       return { metrics, message: 'No sufficient data available.' };
     }
 
@@ -1366,4 +1830,9 @@ carbonRoutes.get('/dashboard', (req, res, next) => carbonController.getDashboard
 carbonRoutes.post('/calculations', requireOrganizationType(OrganizationType.CUSTOMER), validate(calculateCarbonSchema), (req, res, next) => carbonController.calculate(req, res, next));
 carbonRoutes.post('/calculate', requireOrganizationType(OrganizationType.CUSTOMER), validate(calculateCarbonSchema), (req, res, next) => carbonController.calculate(req, res, next));
 carbonRoutes.get('/factors', (req, res, next) => carbonController.getFactors(req, res, next));
-carbonRoutes.post('/factors', validate(createCarbonFactorSchema), (req, res, next) => carbonController.createFactor(req, res, next));
+carbonRoutes.post(
+  '/factors',
+  requireRoles(UserRole.CUSTOMER_ADMIN),
+  validate(createCarbonFactorSchema),
+  (req, res, next) => carbonController.createFactor(req, res, next)
+);

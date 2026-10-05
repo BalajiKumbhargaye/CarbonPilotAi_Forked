@@ -11,6 +11,7 @@ const common = {
   functionalUnit: '1 kg product',
   boundary: 'Cradle-to-gate',
   reportingPeriod: '2026',
+  methodology: 'ISO 14067',
   currency: 'INR',
   evidenceStatus: ClaimStatus.SUPPORTED,
 };
@@ -105,6 +106,30 @@ describe('procurement decision trade-off calculations', () => {
     expect(result.comparisonStatus).toBe(ComparisonStatus.NOT_DIRECTLY_COMPARABLE);
     expect(result.emissionsDifference).toBeUndefined();
     expect(result.costPerEstimatedTonneAvoided).toBeUndefined();
+  });
+
+  it('does not compare trade-offs using different currencies', () => {
+    const result = calculateDecisionTradeOff({
+      ...common,
+      supplierId: 'supplier-a',
+      supplierName: 'Supplier A',
+      totalCost: 100,
+      emissions: 10,
+      intensity: 1,
+    }, {
+      ...common,
+      supplierId: 'supplier-b',
+      supplierName: 'Supplier B',
+      totalCost: 120,
+      emissions: 8,
+      intensity: 0.8,
+      currency: 'USD',
+    });
+
+    expect(result.purchaseCostDifference).toBeUndefined();
+    expect(result.comparisonStatus).toBe(ComparisonStatus.COMPARABLE);
+    expect(result.emissionsDifference).toBe(2);
+    expect(result.warnings).toContain('Purchase cost comparison unavailable because currencies differ.');
   });
 });
 

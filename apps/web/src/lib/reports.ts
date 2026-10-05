@@ -2,13 +2,15 @@ import { apiFetch, getStoredSession } from './auth';
 
 export interface ProcurementCarbonReportSummary {
   totalPurchases: number;
-  totalProcurementQuantity: number;
+  totalProcurementQuantity: number | null;
+  totalProcurementQuantityByUnit: Array<{ unit: string; quantity: number }>;
   suppliersCount: number;
   productsCount: number;
+  unavailableProcurementValueCount: number;
   totalProcurementValueByCurrency: Array<{ currency: string; amount: number }>;
-  totalExpectedEmissions: number;
-  totalActualEmissions: number;
-  totalVariance: number;
+  totalExpectedEmissions: number | null;
+  totalActualEmissions: number | null;
+  totalVariance: number | null;
   purchasesWithCarbonData: number;
   purchasesWithoutCarbonData: number;
   purchasesNotComparable: number;
@@ -42,23 +44,33 @@ export interface ProcurementCarbonReportRecord {
   product: { _id: string; name: string; productCode?: string; category: string; unit: string };
   expected: {
     quantity?: number;
+    quantityUnit?: string;
     carbonIntensity?: number;
     carbonIntensityUnit?: string;
     functionalUnit?: string;
     lifecycleBoundary?: string;
     reportingPeriod?: string;
+    methodology?: string;
     evidenceStatus?: string;
+    carbonDataSource?: string;
     emissions?: number;
+    sourceReference?: { documentId?: string; documentName?: string; page?: number; sourceText?: string; extractionMethod?: string };
   };
   actual: {
     quantity?: number;
+    quantityUnit?: string;
     carbonIntensity?: number;
     carbonIntensityUnit?: string;
     functionalUnit?: string;
     lifecycleBoundary?: string;
     reportingPeriod?: string;
+    methodology?: string;
     evidenceStatus?: string;
+    carbonDataSource?: string;
     emissions?: number;
+    factorSource?: string;
+    calculationId?: string;
+    sourceReference?: { documentId?: string; documentName?: string; page?: number; sourceText?: string; extractionMethod?: string };
   };
   status: 'NOT_AVAILABLE' | 'EXPECTED_ONLY' | 'ACTUAL_ONLY' | 'NOT_COMPARABLE' | 'COMPLETE';
   variance?: number;

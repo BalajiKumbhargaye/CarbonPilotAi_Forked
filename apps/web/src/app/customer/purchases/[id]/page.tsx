@@ -89,21 +89,25 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
       {tracking && (
         <Card>
           <CardHeader>
-            <CardTitle>Expected vs Actual Carbon Tracking</CardTitle>
+            <CardTitle>Expected vs. calculated procurement emissions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Expected Carbon</p>
-                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.expected.emissions != null ? `${tracking.expected.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Expected emissions</p>
+                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.expected.emissions != null ? `${tracking.expected.emissions.toLocaleString()} kgCO2e` : 'Not available'}</p>
                 <p className="mt-1 text-sm text-slate-500">{tracking.expected.quantity ?? '—'} {purchase.unit} × {tracking.expected.carbonIntensity ?? '—'} {tracking.expected.carbonIntensityUnit || 'Unit unavailable'}</p>
+                {tracking.expected.sourceReference && <SourceProvenance source={tracking.expected.sourceReference} />}
               </div>
               <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Calculated Actual Carbon</p>
-                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.actual.emissions != null ? `${tracking.actual.emissions.toLocaleString()} kgCO2e` : 'N/A'}</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Calculated emissions</p>
+                <p className="mt-2 text-lg font-semibold text-slate-900 dark:text-slate-100">{tracking.actual.emissions != null ? `${tracking.actual.emissions.toLocaleString()} kgCO2e` : 'Not available'}</p>
                 <p className="mt-1 text-sm text-slate-500">{tracking.actual.quantity ?? '—'} {purchase.unit} × {tracking.actual.carbonIntensity ?? '—'} {tracking.actual.carbonIntensityUnit || 'Unit unavailable'}</p>
+                {tracking.actual.factorSource && <p className="mt-1 text-xs text-slate-500">Factor source: {tracking.actual.factorSource}</p>}
+                {tracking.actual.sourceReference && <SourceProvenance source={tracking.actual.sourceReference} />}
               </div>
             </div>
+            <p className="text-xs text-slate-500">Calculated from procurement quantity and eligible carbon intensity data; this is not a direct measurement of physical emissions.</p>
             <div className="grid gap-4 md:grid-cols-3">
               <Info label="Variance" value={tracking.variance != null ? `${tracking.variance > 0 ? '+' : ''}${tracking.variance.toLocaleString()} kgCO2e` : 'N/A'} />
               <Info label="Variance %" value={tracking.variancePercent != null ? `${tracking.variancePercent > 0 ? '+' : ''}${tracking.variancePercent}%` : 'N/A'} />
@@ -112,6 +116,7 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
             <div className="grid gap-4 md:grid-cols-2">
               <Info label="Lifecycle boundary" value={tracking.expected.lifecycleBoundary || tracking.actual.lifecycleBoundary || '—'} />
               <Info label="Functional unit" value={tracking.expected.functionalUnit || tracking.actual.functionalUnit || '—'} />
+              <Info label="Methodology" value={tracking.expected.methodology || tracking.actual.methodology || 'Not available'} />
               <Info label="Evidence" value={tracking.expected.evidenceStatus || tracking.actual.evidenceStatus || 'NOT_AVAILABLE'} />
               <Info label="Source of variance" value={tracking.sourceOfVariance || 'NONE'} />
             </div>
@@ -129,5 +134,11 @@ export default function PurchaseDetailsPage({ params }: { params: { id: string }
 }
 
 function Info({ label, value }: { label: string; value: string }) { return <div><p className="text-xs font-medium uppercase text-slate-500">{label}</p><p className="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">{value}</p></div>; }
+function SourceProvenance({ source }: { source: NonNullable<NonNullable<PurchaseCarbonTrackingRecord['expected']['sourceReference']> | NonNullable<PurchaseCarbonTrackingRecord['actual']['sourceReference']>> }) {
+  return <div className="mt-2 text-xs text-slate-500">
+    <p>{source.documentName || 'Source document'}{source.page ? ` · page ${source.page}` : ''}{source.extractionMethod ? ` · ${source.extractionMethod}` : ''}</p>
+    {source.sourceText && <p className="mt-1 line-clamp-2">{source.sourceText}</p>}
+  </div>;
+}
 function EmptySection({ title, children }: { title: string; children: React.ReactNode }) { return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent><p className="py-3 text-sm text-slate-500">{children}</p></CardContent></Card>; }
 function formatMoney(amount: string, currency: string) { const value = Number(amount); try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); } catch { return `${currency} ${amount}`; } }

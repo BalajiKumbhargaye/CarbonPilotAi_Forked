@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { Breadcrumb } from '@/components/ui/Breadcrumb';
 import { Card } from '@/components/ui/Card';
 import { getPurchaseOrders, type PurchaseOrderRecord } from '@/lib/procurement';
@@ -30,9 +31,12 @@ export default function CustomerPurchaseOrdersPage() {
   return (
     <div className="space-y-6">
       <Breadcrumb items={[{ label: 'Procurement', href: '/customer/purchases' }, { label: 'Purchase Orders' }]} />
-      <div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Purchase Orders</h1>
-        <p className="text-sm text-slate-500">Persisted purchase-order records. Creation is not available in this workflow.</p>
+        <p className="text-sm text-slate-500">Persisted purchase orders. Upload and review source documents in the procurement document workflow.</p>
+        </div>
+        <Link href="/customer/procurement-documents" className="inline-flex h-10 items-center border border-emerald-700 px-4 text-sm font-semibold text-emerald-800 hover:bg-emerald-50">Upload and review purchase order</Link>
       </div>
 
       {purchaseOrders === null && !error && <p role="status" className="text-sm text-slate-500">Loading purchase orders…</p>}
@@ -49,6 +53,7 @@ export default function CustomerPurchaseOrdersPage() {
                 <th className="px-4 py-3">Total value</th>
                 <th className="px-4 py-3">Line items</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Source document</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -60,6 +65,9 @@ export default function CustomerPurchaseOrdersPage() {
                   <td className="px-4 py-3 font-medium">{formatAmount(order.totalAmount, order.currency)}</td>
                   <td className="px-4 py-3">{order.items.length}</td>
                   <td className="px-4 py-3">{order.status}</td>
+                  <td className="px-4 py-3">{order.documentId
+                    ? <Link href={`/customer/procurement-documents?documentId=${encodeURIComponent(order.documentId)}`} className="font-medium text-emerald-800 underline">View source</Link>
+                    : 'Not available'}</td>
                 </tr>
               ))}
             </tbody>

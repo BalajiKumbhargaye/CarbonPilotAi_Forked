@@ -1,9 +1,10 @@
 import mongoose, { Schema, Document } from 'mongoose';
-import { IDocument, IProcurementReviewData, DocumentType, DocumentStatus, DocumentClassificationSource } from '@carbonpilot/shared';
+import { IDocument, IProcurementExtractedData, IProcurementReviewData, DocumentType, DocumentStatus, DocumentClassificationSource } from '@carbonpilot/shared';
 
 export interface IDocumentModel extends Omit<IDocument, '_id'>, Document {
   storageKey?: string;
   reviewData?: IProcurementReviewData;
+  extractedData?: IProcurementExtractedData;
 }
 
 const DocumentSchema = new Schema<IDocumentModel>(
@@ -39,12 +40,15 @@ const DocumentSchema = new Schema<IDocumentModel>(
     storageKey: { type: String, select: false },
     mimeType: { type: String, required: true },
     fileSize: { type: Number, required: true },
+    contentHash: { type: String, select: false },
     reportingPeriod: { type: String },
     processingError: { type: String },
     reviewData: { type: Schema.Types.Mixed },
+    extractedData: { type: Schema.Types.Mixed },
     invoiceId: { type: Schema.Types.ObjectId, ref: 'Invoice' },
     purchaseOrderId: { type: Schema.Types.ObjectId, ref: 'PurchaseOrder' },
     purchaseId: { type: Schema.Types.ObjectId, ref: 'Purchase' },
+    purchaseIds: [{ type: Schema.Types.ObjectId, ref: 'Purchase' }],
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: { type: Date },
     dataRequestId: { type: Schema.Types.ObjectId as unknown as typeof String, ref: 'DataRequest', index: true },
@@ -58,6 +62,11 @@ const DocumentSchema = new Schema<IDocumentModel>(
   {
     timestamps: { createdAt: 'uploadedAt', updatedAt: 'updatedAt' },
   }
+);
+
+DocumentSchema.index(
+  { organizationId: 1, type: 1, contentHash: 1 },
+  { unique: true, partialFilterExpression: { contentHash: { $type: 'string' } } }
 );
 
 export const DocumentModel = mongoose.model<IDocumentModel>('Document', DocumentSchema);
