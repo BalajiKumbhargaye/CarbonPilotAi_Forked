@@ -6,7 +6,7 @@ import { createApp } from '../src/app';
 import { ENV, resolveJwtExpirySeconds, resolveJwtSecret } from '../src/config/env';
 import { procurementService } from '../src/modules/procurement';
 import { facilityService } from '../src/modules/facilities';
-import { logout } from '../../web/src/lib/auth';
+import { getPortalDestination, logout } from '../../web/src/lib/auth';
 
 vi.mock('../src/config/database', () => ({
   isDatabaseConnected: () => true,
@@ -245,6 +245,30 @@ describe('authentication and role authorization', () => {
   it('logs suppliers in and issues a bearer token', async () => {
     const token = await registerAndLogin(supplierRegistration);
     expect(token.split('.')).toHaveLength(3);
+  });
+
+  it('routes users by their authenticated role and organization type', () => {
+    expect(getPortalDestination('CUSTOMER_ADMIN', 'CUSTOMER')).toBe('/customer/dashboard');
+    expect(getPortalDestination('SUPPLIER_ADMIN', 'SUPPLIER')).toBe('/supplier/dashboard');
+    expect(getPortalDestination('SUPPLIER_ADMIN', 'CUSTOMER')).toBeNull();
+    expect(getPortalDestination('UNKNOWN_ROLE', 'CUSTOMER')).toBeNull();
+  });
+
+  it('rejects login when the database role and organization type do not match', async () => {
+    await request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(supplierRegistration),
+    });
+    store.memberships[0].role = 'CUSTOMER_ADMIN';
+
+    const response = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: supplierRegistration.email, password: supplierRegistration.password }),
+    });
+    const result = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(result.error.code).toBe('ROLE_ORGANIZATION_MISMATCH');
   });
 
   it('rejects an incorrect password without revealing account details', async () => {

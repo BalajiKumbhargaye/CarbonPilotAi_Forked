@@ -35,15 +35,17 @@ export default function BuyerProductDetailsPage({ params }: { params: { id: stri
       setProduct(item);
       setCategories(categoryItems);
       setSuppliers(supplierItems);
+      if (supplierItems.some((supplier) => supplier._id === item.supplierId)) {
+        getPurchases({ productId: params.id }).then((items) => {
+          if (active) setPurchases(items);
+        }).catch(() => {
+          if (active) setHistoryError('Unable to load procurement history.');
+        });
+      }
     }).catch(() => {
       if (active) setError('Unable to load product. Please try again.');
     }).finally(() => {
       if (active) setLoading(false);
-    });
-    getPurchases({ productId: params.id }).then((items) => {
-      if (active) setPurchases(items);
-    }).catch(() => {
-      if (active) setHistoryError('Unable to load procurement history.');
     });
     return () => { active = false; };
   }, [params.id, retryCount]);
@@ -65,6 +67,7 @@ export default function BuyerProductDetailsPage({ params }: { params: { id: stri
 
   if (loading) return <LoadingState message="Loading product..." />;
   if (!product) return <div className="space-y-4 py-10 text-center"><p role="alert" className="text-sm text-rose-700">{error || 'Product not found.'}</p><Button variant="outline" size="sm" onClick={() => setRetryCount((value) => value + 1)}>Try again</Button></div>;
+  const canManage = suppliers.some((supplier) => supplier._id === product.supplierId);
 
   return (
     <div className="space-y-6">
@@ -73,7 +76,7 @@ export default function BuyerProductDetailsPage({ params }: { params: { id: stri
       {error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</p>}
       <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between dark:border-slate-800">
         <div className="flex items-start gap-3"><span className="rounded-md bg-emerald-50 p-2 text-emerald-700"><Package className="h-5 w-5" /></span><div><h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{product.name}</h1><p className="mt-1 text-sm text-slate-500">{product.supplier.name} · {product.category}</p></div></div>
-        <div className="flex gap-2"><Link href="/customer/products"><Button variant="outline" size="sm"><ArrowLeft className="h-4 w-4" /> Products</Button></Link><Button size="sm" onClick={() => setEditing(true)}><Edit2 className="h-4 w-4" /> Edit product</Button></div>
+        <div className="flex gap-2"><Link href="/customer/products"><Button variant="outline" size="sm"><ArrowLeft className="h-4 w-4" /> Products</Button></Link>{canManage && <Button size="sm" onClick={() => setEditing(true)}><Edit2 className="h-4 w-4" /> Edit product</Button>}</div>
       </header>
 
       <section className="space-y-3"><h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Basic information</h2><Card><CardContent className="grid gap-5 p-5 sm:grid-cols-2 lg:grid-cols-3"><Info label="Product" value={product.name} /><Info label="Supplier" value={product.supplier.name} /><Info label="Category" value={product.category} /><Info label="Product code" value={product.productCode || '—'} /><Info label="Unit" value={product.unit} /><Info label="Supplier price per unit" value={product.sellingPrice !== undefined && product.currency ? formatUnitPrice(product.sellingPrice, product.currency) : 'Not set'} /><Info label="Status" value={product.status === 'ACTIVE' ? 'Active' : 'Inactive'} /><Info label="Description" value={product.description || '—'} /></CardContent></Card></section>
@@ -84,11 +87,11 @@ export default function BuyerProductDetailsPage({ params }: { params: { id: stri
         <EmptySection title="Supplier Performance">No performance data available yet.</EmptySection>
       </div>
 
-      <section className="space-y-3"><h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Procurement History</h2><Card><CardContent className="p-0">{historyError ? <p role="alert" className="p-5 text-sm text-rose-700">{historyError}</p> : purchases.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Reference</th><th className="px-4 py-3">Quantity</th><th className="px-4 py-3">Amount</th></tr></thead><tbody className="divide-y divide-slate-200 dark:divide-slate-800">{purchases.map((purchase) => <tr key={purchase._id}><td className="px-4 py-3">{purchase.supplierOrganization?.name || '—'}</td><td className="px-4 py-3">{new Date(purchase.purchaseDate).toLocaleDateString()}</td><td className="px-4 py-3">{purchase.referenceNumber || '—'}</td><td className="px-4 py-3">{Number(purchase.quantity).toLocaleString()} {purchase.unit}</td><td className="px-4 py-3 font-medium">{formatMoney(purchase.totalAmount, purchase.currency)}</td></tr>)}</tbody></table></div> : <p className="p-5 text-sm text-slate-500">No procurement records yet.</p>}</CardContent></Card></section>
+      {canManage && <section className="space-y-3"><h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Procurement History</h2><Card><CardContent className="p-0">{historyError ? <p role="alert" className="p-5 text-sm text-rose-700">{historyError}</p> : purchases.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900/60"><tr><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Reference</th><th className="px-4 py-3">Quantity</th><th className="px-4 py-3">Amount</th></tr></thead><tbody className="divide-y divide-slate-200 dark:divide-slate-800">{purchases.map((purchase) => <tr key={purchase._id}><td className="px-4 py-3">{purchase.supplierOrganization?.name || '—'}</td><td className="px-4 py-3">{new Date(purchase.purchaseDate).toLocaleDateString()}</td><td className="px-4 py-3">{purchase.referenceNumber || '—'}</td><td className="px-4 py-3">{Number(purchase.quantity).toLocaleString()} {purchase.unit}</td><td className="px-4 py-3 font-medium">{formatMoney(purchase.totalAmount, purchase.currency)}</td></tr>)}</tbody></table></div> : <p className="p-5 text-sm text-slate-500">No procurement records yet.</p>}</CardContent></Card></section>}
 
-      <Modal isOpen={editing} onClose={() => setEditing(false)} title="Edit product" description="Update the product information while keeping it assigned to its supplier." className="max-h-[90vh] overflow-y-auto">
+      {canManage && <Modal isOpen={editing} onClose={() => setEditing(false)} title="Edit product" description="Update the product information while keeping it assigned to its supplier." className="max-h-[90vh] overflow-y-auto">
         <ProductForm key={product._id} product={product} categories={categories} setCategories={setCategories} suppliers={suppliers} supplierMode={false} isSubmitting={saving} submitLabel="Save changes" onSubmit={save} />
-      </Modal>
+      </Modal>}
     </div>
   );
 }

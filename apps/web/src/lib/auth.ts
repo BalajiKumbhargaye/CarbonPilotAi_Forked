@@ -1,5 +1,26 @@
 export type OrganizationType = 'CUSTOMER' | 'SUPPLIER';
 
+const buyerRoles = new Set(['CUSTOMER_ADMIN', 'PROCUREMENT_MANAGER', 'SUSTAINABILITY_MANAGER']);
+const supplierRoles = new Set(['SUPPLIER_ADMIN', 'DATA_CONTRIBUTOR']);
+
+export function getPortalDestination(
+  role?: string | null,
+  organizationType?: OrganizationType | string | null
+): string | null {
+  const normalizedRole = typeof role === 'string' ? role.toUpperCase() : undefined;
+  const normalizedType = typeof organizationType === 'string' ? organizationType.toUpperCase() : undefined;
+
+  if (buyerRoles.has(normalizedRole || '') && normalizedType === 'CUSTOMER') {
+    return '/customer/dashboard';
+  }
+
+  if (supplierRoles.has(normalizedRole || '') && normalizedType === 'SUPPLIER') {
+    return '/supplier/dashboard';
+  }
+
+  return null;
+}
+
 export interface SessionUser {
   id: string;
   name: string;
@@ -15,6 +36,11 @@ export interface SessionUser {
 export interface SessionData {
   token: string;
   user: SessionUser;
+}
+
+export interface CurrentUserResponse {
+  membership?: { role?: string } | null;
+  organization?: { id?: string; _id?: string; name?: string; type?: OrganizationType };
 }
 
 const STORAGE_KEY = 'carbonpilot_session';
@@ -119,7 +145,7 @@ export async function apiCurrentUser() {
     throw new Error('Missing session');
   }
 
-  return apiFetch<{ user: SessionUser; organization: { id: string; name: string; type: OrganizationType } }>(
+  return apiFetch<CurrentUserResponse>(
     '/api/auth/me',
     { method: 'GET' },
     session.token

@@ -137,7 +137,8 @@ export default function BuyerDataRequestDetailPage() {
                 {document.claims?.length ? <div className="space-y-3 border-t border-slate-100 pt-2">
                   <h4 className="text-xs font-semibold text-slate-900">Claims and evidence</h4>
                   {document.claims.map((claim) => <div key={claim._id} className="space-y-1 border-l-2 border-slate-200 pl-3 text-xs">
-                    <p className="font-medium text-slate-800">{fieldLabel(claim.type)}: {String(claim.value)}{claim.unit ? ` ${claim.unit}` : ''} · Claim status: {claim.status}</p>
+                    <p className="font-medium text-slate-800">{fieldLabel(claim.type)}: {String(claim.value)}{claim.unit ? ` ${claim.unit}` : ''} · Claim status: {claim.status}{claim.supplierDeclared ? ' · Supplier-declared' : ''}</p>
+                    {claim.supplierDeclared && <p>Claim context: Functional unit {claim.functionalUnit || 'not provided'} · Methodology {claim.methodology || 'not provided'} · Reporting period {claim.reportingPeriod || 'not provided'} · Boundary {claim.boundary || 'not provided'}</p>}
                     <p>Evidence: Linked · {claim.evidence?.relationshipType ? fieldLabel(claim.evidence.relationshipType) : 'Relationship unavailable'} · {document.filename}{claim.evidence?.page ? ` · Page ${claim.evidence.page}` : ''}</p>
                     {claim.sourceReference?.sourceType && <p>Provenance: {fieldLabel(claim.sourceReference.sourceType)}{claim.sourceReference.extractionMethod ? ` · ${claim.sourceReference.extractionMethod}` : ''}</p>}
                     {claim.evidence?.sourceText && <p className="text-slate-600">Source text: “{claim.evidence.sourceText}”</p>}

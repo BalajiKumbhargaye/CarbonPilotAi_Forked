@@ -45,6 +45,7 @@ const DataRequestSchema = new Schema<IDataRequestDocument>(
     description: { type: String, required: true, trim: true },
     deadline: { type: Date },
     productId: { type: Schema.Types.ObjectId, ref: 'Product' },
+    requestGroupId: { type: String, trim: true, index: true },
     templateId: { type: Schema.Types.ObjectId, ref: 'QuestionnaireTemplate' },
     status: {
       type: String,

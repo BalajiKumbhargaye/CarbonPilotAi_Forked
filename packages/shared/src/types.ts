@@ -336,6 +336,7 @@ export interface IExtractionField {
   unit?: string;
   confidence?: number;
   page?: number;
+  source?: string;
   sourceText?: string;
   section?: string;
   tableReference?: string;
@@ -502,6 +503,7 @@ export interface IDataRequest {
   deadline?: string | Date;
   status: DataRequestStatus;
   productId?: string;
+  requestGroupId?: string;
   templateId?: string;
   requestedItems: IDataRequestItem[];
   allowPartialSubmission: boolean;
@@ -673,9 +675,97 @@ export interface IProcurementDecisionOptionSnapshot {
   methodology?: string;
   claimId?: string;
   sourceReference?: ICarbonCalculation['sourceReference'];
+  evidence?: Array<{
+    documentId: string;
+    documentName: string;
+    page?: number;
+    section?: string;
+    sourceText?: string;
+    relationshipType: string;
+    downloadPath?: string;
+  }>;
+  evidenceCount?: number;
+  evidenceDocumentsShared?: boolean;
+  verification?: Record<string, unknown>;
+  carbonCalculation?: Record<string, unknown>;
+  eligibleForCarbonCalculation?: boolean;
+  currentPriceUpdatedAt?: string | Date;
+  dataFreshness?: Record<string, unknown>;
   evidenceStatus: ClaimStatus | 'MISSING';
   corroborationStatus: 'CORROBORATED' | 'NOT_AVAILABLE';
   comparisonStatus: 'COMPARABLE' | 'NOT_DIRECTLY_COMPARABLE' | 'NOT_AVAILABLE';
+  verificationStatus?: ClaimStatus | 'NOT_AVAILABLE';
+  certificates?: Array<{
+    documentId?: string;
+    downloadPath?: string;
+    type: string;
+    certificateNumber: string;
+    issuingBody: string;
+    issueDate: string | Date;
+    expiryDate: string | Date;
+    status: string;
+    externallyVerified: boolean;
+  }>;
+  certificateEvidenceCount?: number;
+  procurementHistory?: {
+    purchaseCount: number;
+    completedPurchaseCount: number;
+    lastPurchaseDate?: string | Date;
+  };
+  dataCompleteness?: {
+    available: number;
+    total: number;
+    fields: Array<{ name: string; available: boolean; included?: boolean }>;
+  };
+  eligibilityStatus?: 'ELIGIBLE' | 'PARTIALLY_ELIGIBLE' | 'NOT_COMPARABLE' | 'INSUFFICIENT_DATA';
+  recommendationReasons?: string[];
+  whyNotRecommended?: string[];
+  recommendationScore?: number;
+  factorResults?: IProcurementFactorResult[];
+}
+
+export type ProcurementPriorityLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+export type ProcurementDecisionFactor =
+  | 'price'
+  | 'carbon'
+  | 'evidenceQuality'
+  | 'verificationStatus'
+  | 'dataCompleteness'
+  | 'sustainabilityEvidence'
+  | 'procurementReliability';
+
+export interface IProcurementFactorResult {
+  factor: ProcurementDecisionFactor;
+  priority: ProcurementPriorityLevel;
+  weight: number;
+  eligibleComparisons: number;
+  wins: number;
+  ties: number;
+  losses: number;
+  weightedContribution: number;
+  maximumContribution: number;
+}
+
+export interface IProcurementDecisionPriorities {
+  price: ProcurementPriorityLevel;
+  carbon: ProcurementPriorityLevel;
+  evidenceQuality: ProcurementPriorityLevel;
+  verificationStatus: ProcurementPriorityLevel;
+  dataCompleteness: ProcurementPriorityLevel;
+  sustainabilityEvidence: ProcurementPriorityLevel;
+  procurementReliability: ProcurementPriorityLevel;
+}
+
+export interface IProcurementRecommendationSnapshot {
+  status: 'RECOMMENDED' | 'NO_RECOMMENDATION';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'NO_RECOMMENDATION';
+  recommendedSupplierId?: string;
+  recommendedProductId?: string;
+  explanation: string;
+  reasons: string[];
+  whyNotRecommended: Array<{ supplierId: string; productId: string; reasons: string[] }>;
+  methodology: string;
+  generatedAt: string | Date;
 }
 
 export interface IProcurementDecisionHistoryEntry {
@@ -692,6 +782,9 @@ export interface IProcurementDecision {
   productId: string;
   quantity: number;
   unit: string;
+  requestedCurrency?: string;
+  decisionPriorities?: IProcurementDecisionPriorities;
+  recommendationSnapshot?: IProcurementRecommendationSnapshot;
   status: ProcurementDecisionStatus;
   selectedSupplierId?: string;
   selectedProductId?: string;

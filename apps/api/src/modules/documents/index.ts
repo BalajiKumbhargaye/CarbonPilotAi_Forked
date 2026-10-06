@@ -112,7 +112,7 @@ export class DocumentService {
     reportingPeriod?: string;
   }) {
     if (!isSupportedProcurementFile(params.file)) {
-      throw new AppError('Only valid PDF, PNG, and JPG/JPEG files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
+      throw new AppError('Only valid PDF, PNG, JPG/JPEG, and WEBP files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
     }
 
     let supplierId = params.supplierId;

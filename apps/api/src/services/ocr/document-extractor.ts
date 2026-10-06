@@ -397,21 +397,19 @@ export function buildGenericFields(
   method: ExtractionMethod
 ): IExtractionField[] {
   const fields: IExtractionField[] = [];
+  const sourceLabel = (page?: ExtractedPage) => page?.method === 'OCR' ? 'OCR' : method === 'OCR' ? 'OCR' : 'Document text';
 
   const allText = normalizeWhitespace(text);
-
-  /* ----------------------------- Document text ---------------------------- */
 
   if (allText) {
     fields.push({
       field: 'DOCUMENT_TEXT',
       value: allText,
+      source: sourceLabel(),
       sourceText: allText.slice(0, 250),
       extractionStatus: 'EXTRACTED',
     });
   }
-
-  /* ------------------------------- Page text ------------------------------ */
 
   for (const page of pages) {
     const safeText = normalizeWhitespace(page.text);
@@ -424,6 +422,7 @@ export function buildGenericFields(
       field: 'PAGE_TEXT',
       value: safeText,
       page: page.pageNumber,
+      source: sourceLabel(page),
       sourceText: safeText.slice(0, 250),
       extractionStatus: 'EXTRACTED',
     });
@@ -457,6 +456,7 @@ export function buildGenericFields(
           value: match[1],
           page: page.pageNumber,
           confidence: page.confidence,
+          source: sourceLabel(page),
           sourceText: line,
           extractionStatus: 'EXTRACTED',
         });
@@ -471,6 +471,7 @@ export function buildGenericFields(
           unit: carbon.unit,
           page: page.pageNumber,
           confidence: page.confidence,
+          source: sourceLabel(page),
           sourceText: line,
           extractionStatus: 'EXTRACTED',
         });
@@ -486,6 +487,7 @@ export function buildGenericFields(
           unit: '%',
           page: page.pageNumber,
           confidence: page.confidence,
+          source: sourceLabel(page),
           sourceText: line,
           extractionStatus: 'EXTRACTED',
         });
@@ -501,6 +503,7 @@ export function buildGenericFields(
           unit,
           page: page.pageNumber,
           confidence: page.confidence,
+          source: sourceLabel(page),
           sourceText: line,
           extractionStatus: 'EXTRACTED',
         });
@@ -515,6 +518,7 @@ export function buildGenericFields(
           unit: quantity[2],
           page: page.pageNumber,
           confidence: page.confidence,
+          source: sourceLabel(page),
           sourceText: line,
           extractionStatus: 'EXTRACTED',
         });

@@ -13,10 +13,34 @@ import {
   reuseDataRequestDocument,
   saveDataRequestItem,
   submitDataRequest,
+  submitDataRequestClaim,
   uploadDataRequestDocument,
   type DataRequestRecord,
   type DataRequestStatus,
 } from '@/lib/data-requests';
+
+type DeclaredClaimDraft = {
+  type: string;
+  customType: string;
+  value: string;
+  unit: string;
+  functionalUnit: string;
+  methodology: string;
+  reportingPeriod: string;
+  boundary: string;
+};
+
+const claimTypes = ['PCF_VALUE', 'GWP', 'RECYCLED_CONTENT', 'RENEWABLE_ELECTRICITY', 'ENERGY_CONSUMPTION', 'GHG_SCOPE_1', 'GHG_SCOPE_2', 'GHG_SCOPE_3', 'OTHER'];
+const emptyClaimDraft: DeclaredClaimDraft = {
+  type: 'PCF_VALUE',
+  customType: '',
+  value: '',
+  unit: '',
+  functionalUnit: '',
+  methodology: '',
+  reportingPeriod: '',
+  boundary: '',
+};
 
 function isLocked(status: DataRequestStatus) {
   return status === 'SUBMITTED' || status === 'COMPLETED' || status === 'CANCELLED';
@@ -48,11 +72,24 @@ export default function SupplierDataRequestDetailPage() {
   const [uploadingItem, setUploadingItem] = useState('');
   const [reusingItem, setReusingItem] = useState('');
   const [retryingDocument, setRetryingDocument] = useState('');
+  const [claimDrafts, setClaimDrafts] = useState<Record<string, DeclaredClaimDraft>>({});
+  const [savingClaim, setSavingClaim] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+
+  const updateClaimDraft = (documentId: string, update: Partial<DeclaredClaimDraft>) => {
+    setClaimDrafts((current) => ({
+      ...current,
+      [documentId]: {
+        ...emptyClaimDraft,
+        ...current[documentId],
+        ...update,
+      },
+    }));
+  };
 
   const load = async () => {
     const data = await getDataRequest(requestId);
@@ -182,6 +219,56 @@ export default function SupplierDataRequestDetailPage() {
     }
   };
 
+  const submitClaim = async (itemId: string, documentId: string) => {
+    const draft = claimDrafts[documentId] || {
+      type: 'PCF_VALUE',
+      value: '',
+      unit: '',
+      methodology: '',
+      reportingPeriod: '',
+      boundary: '',
+    };
+    const value = Number(draft.value);
+    if (!draft.value.trim() || !Number.isFinite(value) || value < 0 || !draft.unit.trim()) {
+      setError('Enter a non-negative numeric claim value and its unit.');
+      return;
+    }
+    if (!draft.reportingPeriod.trim()) {
+      setError('Enter the reporting period covered by this claim.');
+      return;
+    }
+    if (draft.type === 'PCF_VALUE' && (!draft.functionalUnit.trim() || !draft.boundary.trim())) {
+      setError('Product carbon footprint claims need a functional unit and lifecycle boundary for comparison.');
+      return;
+    }
+    if (draft.type === 'OTHER' && !draft.customType.trim()) {
+      setError('Enter a name for the other claim type.');
+      return;
+    }
+    setSavingClaim(documentId);
+    setError('');
+    setNotice('');
+    try {
+      await submitDataRequestClaim(requestId, itemId, {
+        documentId,
+        type: draft.type,
+        customType: draft.type === 'OTHER' ? draft.customType.trim() : undefined,
+        value,
+        unit: draft.unit.trim(),
+        functionalUnit: draft.functionalUnit.trim() || undefined,
+        methodology: draft.methodology.trim() || undefined,
+        reportingPeriod: draft.reportingPeriod.trim() || undefined,
+        boundary: draft.boundary.trim() || undefined,
+      });
+      await load();
+      setNotice('Your claim is linked to this document. Buyer verification runs when you submit the request.');
+    } catch (claimError) {
+      setError(claimError instanceof Error ? claimError.message : 'Unable to submit the claim.');
+    } finally {
+      setSavingClaim('');
+    }
+  };
+
   const submit = async () => {
     if (!request || !window.confirm('Submit this data request? The buyer will receive your current responses.')) return;
     setSubmitting(true);
@@ -233,12 +320,10 @@ export default function SupplierDataRequestDetailPage() {
             {item.responseType === 'SINGLE_SELECT' && <select disabled={locked} value={values[item._id] || ''} onChange={(event) => setValues((current) => ({ ...current, [item._id]: event.target.value }))} className="response-input"><option value="">Choose an option</option>{item.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select>}
             {item.responseType === 'MULTI_SELECT' && <select multiple disabled={locked} value={(values[item._id] || '').split('\u001f').filter(Boolean)} onChange={(event) => setValues((current) => ({ ...current, [item._id]: Array.from(event.target.selectedOptions).map((option) => option.value).join('\u001f') }))} className="response-input h-24 py-2">{item.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select>}
             {item.responseType === 'DOCUMENT' && <p className="text-xs text-slate-600">Attach one or more PDF, PNG, JPG, or JPEG files (up to 25 MB each).{item.acceptedDocumentTypes?.length ? ` Accepted types: ${item.acceptedDocumentTypes.join(', ')}.` : ''}</p>}
-            {(item.responseType === 'DOCUMENT' || item.requiresEvidence) && !locked && <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-teal-800 hover:underline"><UploadCloud className="h-4 w-4" />{uploadingItem === item._id ? 'Uploading documents...' : 'Upload evidence'}<input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event)} className="sr-only" /></label>}
-            {item.response?.evidenceDocuments.map((document) => <div key={document._id} className={`space-y-2 border border-slate-200 bg-white p-3 ${document.status === 'ARCHIVED' ? 'opacity-70' : ''}`}>
+            {(item.responseType === 'DOCUMENT' || item.requiresEvidence) && !locked && <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-teal-800 hover:underline"><UploadCloud className="h-4 w-4" />{uploadingItem === item._id ? 'Uploading documents...' : 'Upload evidence'}            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event)} className="sr-only" /></label>}            {item.response?.evidenceDocuments.map((document) => <div key={document._id} className={`space-y-2 border border-slate-200 bg-white p-3 ${document.status === 'ARCHIVED' ? 'opacity-70' : ''}`}>
               <button type="button" onClick={async () => { try { const blob = await downloadDataRequestDocument(document, requestId); const url = URL.createObjectURL(blob); const anchor = window.document.createElement('a'); anchor.href = url; anchor.download = document.filename; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (downloadError) { setError(downloadError instanceof Error ? downloadError.message : 'Unable to download evidence.'); } }} className="flex items-center gap-2 text-xs font-medium text-slate-700 hover:text-teal-800"><FileText className="h-4 w-4" />{document.filename}<Download className="h-3.5 w-3.5" /></button>
               <p className="text-xs text-slate-600">{document.documentType || 'Document type unavailable'}{document.documentType === 'OTHER' && ' · Document type could not be confidently matched.'}{document.status === 'ARCHIVED' && ' · Replaced; historical record retained.'}{document.uploadedAt ? ` · Uploaded ${new Date(document.uploadedAt).toLocaleString()}` : ''}</p>
-              {!locked && document.status !== 'ARCHIVED' && <label className="flex cursor-pointer items-center gap-1 text-xs font-semibold text-amber-800 hover:underline"><RefreshCw className="h-3.5 w-3.5" />Replace and retain history<input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event, document._id)} className="sr-only" /></label>}
-              <ol aria-label="Document processing lifecycle" className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+              {!locked && document.status !== 'ARCHIVED' && <label className="flex cursor-pointer items-center gap-1 text-xs font-semibold text-amber-800 hover:underline"><RefreshCw className="h-3.5 w-3.5" />Replace and retain history              <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp" disabled={uploadingItem === item._id} onChange={(event) => uploadEvidence(item._id, event, document._id)} className="sr-only" /></label>}              <ol aria-label="Document processing lifecycle" className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
                 <li className="border-l-2 border-emerald-500 pl-2"><strong>Uploaded</strong><br />Document is stored with this request.</li>
                 <li className={`border-l-2 pl-2 ${document.status === 'PROCESSING' ? 'border-cyan-500 text-cyan-800' : document.extraction?.status === 'SUCCESS' ? 'border-emerald-500' : document.status === 'FAILED' ? 'border-rose-500 text-rose-800' : 'border-slate-300'}`}><strong>{document.status === 'PROCESSING' ? 'Processing' : 'Extraction'}</strong><br />{document.status === 'PROCESSING' ? 'OCR/extraction is in progress.' : document.extraction?.status === 'SUCCESS' ? `${document.extraction.method || 'Extraction'} completed.` : document.status === 'FAILED' ? 'Extraction failed.' : 'Waiting for extraction result.'}</li>
                 <li className={`border-l-2 pl-2 ${document.status === 'EXTRACTED' ? 'border-emerald-500' : document.status === 'NEEDS_REVIEW' ? 'border-amber-500 text-amber-800' : document.status === 'FAILED' ? 'border-rose-500 text-rose-800' : 'border-slate-300'}`}><strong>{document.status === 'EXTRACTED' ? 'Ready for buyer review' : document.status === 'NEEDS_REVIEW' ? 'Needs review' : document.status === 'FAILED' ? 'Failed' : 'Result pending'}</strong><br />Buyer-only claim verification details are shown to the buyer.</li>
@@ -250,6 +335,26 @@ export default function SupplierDataRequestDetailPage() {
               {document.extraction?.text && <details><summary className="cursor-pointer text-xs font-semibold text-slate-700">View extracted text</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border border-slate-200 bg-slate-50 p-2 text-[11px]">{document.extraction.text}</pre></details>}
               {!document.extraction && document.status !== 'FAILED' && <p className="text-xs text-slate-500">{document.status === 'PROCESSING' ? 'Extraction is processing.' : 'No extraction result is available yet.'}</p>}
               {document.status === 'FAILED' && <Button size="sm" variant="outline" disabled={retryingDocument === document._id} onClick={() => retryDocument(document._id)}>{retryingDocument === document._id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}{retryingDocument === document._id ? 'Retrying extraction...' : 'Retry extraction'}</Button>}
+              {document.claims?.filter((claim) => claim.supplierDeclared).map((claim) => <p key={claim._id} className="text-xs text-emerald-800">Claim provided: {fieldLabel(claim.type)} — {claim.value}{claim.unit ? ` ${claim.unit}` : ''}</p>)}
+              {!locked && document.status !== 'ARCHIVED' && !document.claims?.some((claim) => claim.supplierDeclared) && <div className="space-y-2 border-t border-slate-200 pt-3">
+                <p className="text-xs font-semibold text-slate-800">Add a claim for this document</p>
+                <p className="text-xs text-slate-600">Reporting period is required. Product carbon footprint claims also need a functional unit and lifecycle boundary so the buyer can compare the value against the document.</p>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <select aria-label="Claim type" disabled={savingClaim === document._id} value={claimDrafts[document._id]?.type || 'PCF_VALUE'} onChange={(event) => updateClaimDraft(document._id, { type: event.target.value })} className="response-input">
+                    {claimTypes.map((type) => <option key={type} value={type}>{type === 'GWP' ? 'GWP' : fieldLabel(type)}</option>)}
+                  </select>
+                  {(claimDrafts[document._id]?.type || 'PCF_VALUE') === 'OTHER' && <input aria-label="Other claim type" placeholder="Enter claim type" disabled={savingClaim === document._id} value={claimDrafts[document._id]?.customType || ''} onChange={(event) => updateClaimDraft(document._id, { customType: event.target.value })} className="response-input" />}
+                  <input type="number" min="0" step="any" aria-label="Claim value" placeholder="Claim value" disabled={savingClaim === document._id} value={claimDrafts[document._id]?.value || ''} onChange={(event) => updateClaimDraft(document._id, { value: event.target.value })} className="response-input" />
+                  <input aria-label="Claim unit" placeholder="Unit (e.g. kg CO2e/unit)" disabled={savingClaim === document._id} value={claimDrafts[document._id]?.unit || ''} onChange={(event) => updateClaimDraft(document._id, { unit: event.target.value })} className="response-input" />
+                  <input aria-label="Reporting period" placeholder="Reporting period (e.g. 2025)" disabled={savingClaim === document._id} value={claimDrafts[document._id]?.reportingPeriod || ''} onChange={(event) => updateClaimDraft(document._id, { reportingPeriod: event.target.value })} className="response-input" />
+                </div>
+                <details className="text-xs text-slate-600"><summary className="cursor-pointer font-medium">Optional claim context</summary>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                    {(['functionalUnit', 'boundary', 'methodology'] as const).map((field) => <input key={field} aria-label={fieldLabel(field)} placeholder={`${fieldLabel(field)}${field !== 'methodology' && (claimDrafts[document._id]?.type || 'PCF_VALUE') === 'PCF_VALUE' ? ' (required for PCF)' : ''}`} disabled={savingClaim === document._id} value={claimDrafts[document._id]?.[field] || ''} onChange={(event) => updateClaimDraft(document._id, { [field]: event.target.value })} className="response-input" />)}
+                  </div>
+                </details>
+                <Button size="sm" variant="outline" disabled={savingClaim === document._id || document.status === 'ARCHIVED'} onClick={() => submitClaim(item._id, document._id)}>{savingClaim === document._id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{savingClaim === document._id ? 'Saving claim...' : 'Save claim'}</Button>
+              </div>}
             </div>)}
             {item.response && item.response.evidenceDocuments.length === 0 && <p className="text-xs text-slate-500">No documents uploaded for this response.</p>}
             {!locked && item.responseType !== 'DOCUMENT' && <Button size="sm" variant="outline" disabled={savingItem === item._id} onClick={() => saveItem(item._id)}>{savingItem === item._id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{savingItem === item._id ? 'Saving...' : 'Save draft'}</Button>}

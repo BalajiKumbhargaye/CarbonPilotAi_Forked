@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowDown, ArrowRight, ArrowUp, Plus, Send, Trash2 } from 'lucide-react';
 import { Breadcrumb } from '@/components/ui/Breadcrumb';
 import { Button } from '@/components/ui/Button';
+import { EvidenceRankingMatrix } from '@/components/data-requests/EvidenceRankingMatrix';
 import {
   createDataRequest,
   getDataRequestProducts,
@@ -303,6 +304,7 @@ export default function CustomerDataRequestsPage() {
     {error && <p role="alert" className="border-l-4 border-rose-600 bg-rose-50 px-4 py-3 text-sm text-rose-900">{error}</p>}
     {notice && <p role="status" className="border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">{notice}</p>}
     <RequestCounts summary={summary} />
+    <EvidenceRankingMatrix requests={requests} />
 
     {showForm && <form onSubmit={(event) => save(event, true)} className="space-y-5 border-b border-slate-300 pb-7">
       <div className="flex items-baseline justify-between gap-4">

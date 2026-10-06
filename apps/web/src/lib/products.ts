@@ -48,6 +48,7 @@ export interface ProductFilters {
   supplierId?: string;
   categoryId?: string;
   status?: ProductStatus | '';
+  catalog?: boolean;
 }
 
 function getToken() {
@@ -70,7 +71,7 @@ export function createProductCategory(name: string) {
 export function getProducts(filters: ProductFilters = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
-    if (value) query.set(key, value);
+    if (value) query.set(key, String(value));
   }
   const queryString = query.toString();
   return apiFetch<ProductItem[]>(`/api/products${queryString ? `?${queryString}` : ''}`, {}, getToken());

@@ -144,20 +144,28 @@ export default function SupplierComparisonPage() {
               <table className="min-w-full text-left text-sm">
                 <thead className="bg-slate-50 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
                   <tr>
+                    <th className="px-4 py-3 font-medium">Rank</th>
                     <th className="px-4 py-3 font-medium">Supplier</th>
                     <th className="px-4 py-3 font-medium">Current price / unit</th>
                     <th className="px-4 py-3 font-medium">Carbon intensity</th>
                     <th className="px-4 py-3 font-medium">Evidence</th>
                     <th className="px-4 py-3 font-medium">Data completeness</th>
-                    <th className="px-4 py-3 font-medium">Warnings</th>
+                    <th className="px-4 py-3 font-medium">Why this rank</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 bg-white dark:divide-slate-800 dark:bg-slate-950">
                   {result.suppliers.map((supplier) => (
                     <tr key={supplier.supplierId}>
                       <td className="px-4 py-3 align-top">
+                        <div className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          #{supplier.rank ?? 1}
+                        </div>
+                        {supplier.rankScore != null && <div className="mt-1 text-xs text-slate-500">Score {supplier.rankScore.toFixed(0)}/100</div>}
+                      </td>
+                      <td className="px-4 py-3 align-top">
                         <div className="font-medium text-slate-900 dark:text-slate-100">{supplier.supplierName}</div>
                         <div className="text-xs text-slate-500">{supplier.productName}</div>
+                        {supplier.warnings.length ? supplier.warnings.slice(0, 1).map((warning) => <div key={`${supplier.supplierId}-${warning}`} className="mt-1 text-[11px] text-amber-600">{warning}</div>) : <div className="mt-1 text-[11px] text-emerald-600">No major concerns</div>}
                       </td>
                       <td className="px-4 py-3 align-top">
                         {supplier.pricePerUnit != null ? `${supplier.currency || 'Currency unavailable'} ${supplier.pricePerUnit.toFixed(2)}` : 'Current price unavailable'}
@@ -180,7 +188,18 @@ export default function SupplierComparisonPage() {
                         <div className="text-xs text-slate-500">{supplier.dataCompleteness.completed}/{supplier.dataCompleteness.requested}</div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-slate-600 dark:text-slate-300">
-                        {supplier.warnings.length ? supplier.warnings.map((warning) => <div key={`${supplier.supplierId}-${warning}`} className="mb-1 flex items-start gap-1"><ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" /> {warning}</div>) : <span className="inline-flex items-center gap-1 text-emerald-600"><TrendingDown className="h-3.5 w-3.5" /> No major concerns</span>}
+                        {supplier.rankReasons && supplier.rankReasons.length ? (
+                          <ul className="space-y-1">
+                            {supplier.rankReasons.map((reason) => (
+                              <li key={`${supplier.supplierId}-${reason}`} className="flex items-start gap-1">
+                                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                <span>{reason}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-slate-500"><ShieldAlert className="h-3.5 w-3.5" /> No rank rationale available</span>
+                        )}
                       </td>
                     </tr>
                   ))}

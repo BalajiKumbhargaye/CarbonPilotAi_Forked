@@ -79,6 +79,7 @@ export interface DataRequestDocumentLink {
     type: string;
     value: string | number;
     unit?: string;
+    functionalUnit?: string;
     methodology?: string;
     reportingPeriod?: string;
     boundary?: string;
@@ -91,6 +92,7 @@ export interface DataRequestDocumentLink {
       extractionMethod?: string;
     };
     evidence?: { page?: number; section?: string; sourceText?: string; relationshipType?: string };
+    supplierDeclared?: boolean;
     eligibleForCarbonCalculation?: boolean;
     verification?: {
       overallStatus: string;
@@ -164,6 +166,7 @@ export interface DataRequestRecord {
   deadline?: string;
   status: DataRequestStatus;
   productId?: string;
+  requestGroupId?: string;
   templateId?: string;
   product?: { _id: string; name: string; productCode?: string } | null;
   customerOrganization?: { _id: string; name: string } | null;
@@ -172,6 +175,7 @@ export interface DataRequestRecord {
   allowPartialSubmission: boolean;
   clarificationMessage?: string;
   clarificationItemIds?: string[];
+  createdAt?: string;
   completion: {
     completed: number;
     total: number;
@@ -215,6 +219,7 @@ export interface CreateDataRequestInput {
   description: string;
   deadline?: string;
   productId?: string;
+  requestGroupId?: string;
   templateId?: string;
   allowPartialSubmission: boolean;
   requestedItems: DataRequestRequirementInput[];
@@ -281,6 +286,28 @@ export function uploadDataRequestDocument(id: string, itemId: string, file: File
     method: 'POST',
     body: form,
   }, getToken());
+}
+
+export function submitDataRequestClaim(
+  id: string,
+  itemId: string,
+  payload: {
+    documentId: string;
+    type: string;
+    customType?: string;
+    value: number;
+    unit: string;
+    functionalUnit?: string;
+    methodology?: string;
+    reportingPeriod?: string;
+    boundary?: string;
+  }
+) {
+  return apiFetch<{ _id: string; status: string; reused: boolean }>(
+    `/api/data-requests/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/claims`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    getToken()
+  );
 }
 
 export function submitDataRequest(id: string) {

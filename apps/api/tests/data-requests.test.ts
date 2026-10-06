@@ -168,6 +168,11 @@ vi.mock('../src/models/SupplierRelationship', () => ({
   SupplierRelationshipModel: {
     findOne: vi.fn(async (query: any) => state.relationships.find((relationship) => queryMatches(relationship, query)) || null),
     find: vi.fn(async (query: any) => state.relationships.filter((relationship) => queryMatches(relationship, query))),
+    create: vi.fn(async (values: any) => {
+      const relationship = { ...values, _id: `relationship-${++state.nextId}` };
+      state.relationships.push(relationship);
+      return relationship;
+    }),
   },
 }));
 vi.mock('../src/models/Product', () => ({
@@ -326,11 +331,6 @@ describe('buyer-to-supplier data requests', () => {
 
   it('creates a buyer-owned draft, validates supplier/product links, and sends an in-app notification', async () => {
     await expect(dataRequestsService.create({
-      supplierId: ids.supplierB,
-      title: 'Test',
-      requestedItems: [{ label: 'PCF', responseType: 'DOCUMENT', required: true }],
-    }, buyerA)).rejects.toMatchObject({ statusCode: 403 });
-    await expect(dataRequestsService.create({
       supplierId: ids.supplierA,
       productId: ids.productB,
       title: 'Test',
@@ -340,16 +340,40 @@ describe('buyer-to-supplier data requests', () => {
     const request = await dataRequestsService.create({
       supplierId: ids.supplierA,
       productId: ids.productA,
+      requestGroupId: 'aa2a5c58-2796-4f78-9911-0e2c7274e5f5',
       title: 'Steel sustainability data - 2026',
       description: '',
       requestedItems: [{ label: 'PCF report', responseType: 'DOCUMENT', required: true }],
     }, buyerA);
-    expect(request).toMatchObject({ status: 'DRAFT', createdBy: ids.buyerUser, productId: ids.productA });
+    expect(request).toMatchObject({
+      status: 'DRAFT',
+      createdBy: ids.buyerUser,
+      productId: ids.productA,
+      requestGroupId: 'aa2a5c58-2796-4f78-9911-0e2c7274e5f5',
+    });
+    expect(request.description).toBe('Please upload the requested documents for this product.');
 
     const sent = await dataRequestsService.send(ids.requestA, buyerA);
     expect(sent.status).toBe('SENT');
     expect(state.notifications).toHaveLength(1);
     expect(state.notifications[0]).toMatchObject({ organizationId: ids.supplierOrgA, title: 'New data request' });
+  });
+
+  it('creates a pending supplier relationship when the buyer requests documents from an unconnected supplier', async () => {
+    const request = await dataRequestsService.create({
+      supplierId: ids.supplierB,
+      productId: ids.productB,
+      title: 'Supplier B document request',
+      description: '',
+      requestedItems: [{ label: 'PCF report', responseType: 'DOCUMENT', required: true }],
+    }, buyerA);
+
+    expect(request).toMatchObject({ status: 'DRAFT', productId: ids.productB });
+    expect(state.relationships).toContainEqual(expect.objectContaining({
+      customerOrganizationId: ids.buyerA,
+      supplierOrganizationId: ids.supplierOrgB,
+      status: 'PENDING',
+    }));
   });
 
   it('creates one request with multiple document requirements and a questionnaire question', async () => {
@@ -429,6 +453,82 @@ describe('buyer-to-supplier data requests', () => {
     });
     expect(state.responses[0]).toMatchObject({ value: 'Mass balance', status: 'SUBMITTED' });
     expect(state.notifications.at(-1)).toMatchObject({ organizationId: ids.buyerA, title: 'Supplier submitted a data request' });
+  });
+
+  it('creates an idempotent supplier-declared claim linked only to its requested document', async () => {
+    const documentId = '123456789012345678901234';
+    state.requests.push(makeRequest(baseRequest));
+    state.documents.push({
+      _id: documentId,
+      organizationId: ids.supplierOrgA,
+      supplierId: ids.supplierA,
+      dataRequestId: ids.requestA,
+      requestedItemId: ids.itemDoc,
+      filename: 'epd.pdf',
+      status: 'EXTRACTED',
+    });
+    const input = {
+      documentId,
+      type: 'PCF_VALUE',
+      value: 12.5,
+      unit: 'kg CO2e/unit',
+      functionalUnit: '1 unit of product',
+      reportingPeriod: '2025',
+      boundary: 'cradle-to-gate',
+    };
+
+    const first = await dataRequestsService.submitSupplierClaim(ids.requestA, ids.itemDoc, input, supplierUserA);
+    const retry = await dataRequestsService.submitSupplierClaim(ids.requestA, ids.itemDoc, input, supplierUserA);
+
+    expect(first).toMatchObject({ status: 'PENDING', reused: false });
+    expect(retry).toMatchObject({ _id: first._id, reused: true });
+    expect(state.claims).toHaveLength(1);
+    expect(state.claims[0]).toMatchObject({
+      type: 'PCF_VALUE',
+      value: 12.5,
+      dataRequestId: ids.requestA,
+      documentId,
+      sourceReference: { section: 'SUPPLIER_DECLARED' },
+    });
+    expect(state.evidenceLinks).toContainEqual(expect.objectContaining({
+      claimId: first._id,
+      documentId,
+      relationshipType: 'SUPPLIER_DECLARED_CLAIM',
+    }));
+
+    await expect(dataRequestsService.submitSupplierClaim(ids.requestA, ids.itemDoc, {
+      ...input,
+      documentId: '987654321098765432109876',
+    }, supplierUserA)).rejects.toMatchObject({ code: 'DOCUMENT_NOT_FOUND' });
+  });
+
+  it('accepts a supplier-entered name for an Other claim type', async () => {
+    const documentId = '123456789012345678901234';
+    state.requests.push(makeRequest(baseRequest));
+    state.documents.push({
+      _id: documentId,
+      organizationId: ids.supplierOrgA,
+      supplierId: ids.supplierA,
+      dataRequestId: ids.requestA,
+      requestedItemId: ids.itemDoc,
+      filename: 'evidence.pdf',
+      status: 'EXTRACTED',
+    });
+
+    const result = await dataRequestsService.submitSupplierClaim(ids.requestA, ids.itemDoc, {
+      documentId,
+      type: 'OTHER',
+      customType: 'Water Usage',
+      value: 4,
+      unit: 'L/unit',
+      reportingPeriod: '2025',
+    }, supplierUserA);
+
+    expect(result.reused).toBe(false);
+    expect(state.claims[0]).toMatchObject({
+      type: 'Water Usage',
+      claimText: 'Water Usage: 4 L/unit',
+    });
   });
 
   it('returns persisted required and optional progress in the supplier request list', async () => {

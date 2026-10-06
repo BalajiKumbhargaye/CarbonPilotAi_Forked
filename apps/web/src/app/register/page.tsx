@@ -7,7 +7,7 @@ import { AuthLayout } from '@/components/layouts/AuthLayout';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Button } from '@/components/ui/Button';
-import { apiRegister, setStoredSession } from '@/lib/auth';
+import { apiRegister, getPortalDestination, setStoredSession } from '@/lib/auth';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -39,12 +39,16 @@ export default function RegisterPage() {
         industry: formData.industry,
       });
 
+      const destination = getPortalDestination(response.user.role, response.user.organization.type);
+      if (!destination) {
+        throw new Error('Your account role does not match its organization. Please contact your administrator.');
+      }
+
       setStoredSession({
         token: response.token,
         user: response.user,
       });
 
-      const destination = response.user.organization.type === 'CUSTOMER' ? '/customer/dashboard' : '/supplier/dashboard';
       router.push(destination);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create your account.');

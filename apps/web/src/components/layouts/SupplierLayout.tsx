@@ -189,12 +189,6 @@ export const SupplierLayout: React.FC<{ children: React.ReactNode }> = ({ childr
 
           <div className="flex items-center gap-3">
             <Link
-              href="/customer/dashboard"
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              Switch to Customer View →
-            </Link>
-            <Link
               href="/supplier/notifications"
               className="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
             >

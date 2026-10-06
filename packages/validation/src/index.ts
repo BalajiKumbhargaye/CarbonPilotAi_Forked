@@ -304,6 +304,47 @@ export const createClaimSchema = z.object({
 
 export const updateClaimSchema = createClaimSchema.omit({ supplierId: true }).partial();
 
+export const supplierDataRequestClaimSchema = z.object({
+  documentId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid uploaded document'),
+  type: z.enum([
+    'PCF_VALUE',
+    'GWP',
+    'RECYCLED_CONTENT',
+    'RENEWABLE_ELECTRICITY',
+    'ENERGY_CONSUMPTION',
+    'GHG_SCOPE_1',
+    'GHG_SCOPE_2',
+    'GHG_SCOPE_3',
+    'OTHER',
+  ]),
+  customType: z.string().trim().min(1).max(100).optional(),
+  value: z.number().finite().nonnegative(),
+  unit: z.string().trim().min(1).max(100),
+  functionalUnit: z.string().trim().min(1).max(200).optional(),
+  methodology: z.string().trim().min(1).max(200).optional(),
+  reportingPeriod: z.string().trim().min(1).max(100),
+  boundary: z.string().trim().min(1).max(200).optional(),
+}).superRefine((claim, context) => {
+  if (claim.type === 'OTHER' && !claim.customType) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['customType'],
+      message: 'Enter a name for the other claim type',
+    });
+  }
+  if (claim.type === 'PCF_VALUE') {
+    for (const field of ['functionalUnit', 'boundary'] as const) {
+      if (!claim[field]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `${field} is required to compare a product carbon footprint claim`,
+        });
+      }
+    }
+  }
+});
+
 export const linkEvidenceSchema = z.object({
   claimId: z.string().min(1, 'Claim ID is required'),
   documentId: z.string().min(1, 'Document ID is required'),
@@ -345,11 +386,12 @@ export const reviewVerificationIssueSchema = z.object({
  * Data Request & Questionnaire Schemas
  */
 export const createDataRequestSchema = z.object({
-  supplierId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid connected supplier'),
+  supplierId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid supplier account'),
   title: z.string().trim().min(1, 'Title is required').max(160),
   description: z.string().trim().max(2000).default(''),
   deadline: z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid due date').optional(),
   productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product').optional().or(z.literal('')),
+  requestGroupId: z.string().uuid().optional(),
   templateId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid questionnaire template').optional(),
   allowPartialSubmission: z.boolean().default(false),
   requestedItems: z.array(z.object({
@@ -439,14 +481,29 @@ export const compareCarbonSchema = z.object({
   quantity: z.number().nonnegative().optional(),
 });
 
+export const procurementPriorityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
+export const procurementDecisionPrioritiesSchema = z.object({
+  price: procurementPriorityLevelSchema,
+  carbon: procurementPriorityLevelSchema,
+  evidenceQuality: procurementPriorityLevelSchema,
+  verificationStatus: procurementPriorityLevelSchema,
+  dataCompleteness: procurementPriorityLevelSchema,
+  sustainabilityEvidence: procurementPriorityLevelSchema,
+  procurementReliability: procurementPriorityLevelSchema,
+});
+
 export const procurementScenarioSchema = z.object({
   productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
   quantity: z.number().finite().positive('Quantity must be greater than 0'),
+  currency: z.string().regex(/^[A-Z]{3}$/i, 'Choose a valid 3-letter currency').optional(),
+  priorities: procurementDecisionPrioritiesSchema.optional(),
 });
 
 export const createProcurementDecisionSchema = z.object({
   productId: z.string().regex(/^[a-f\d]{24}$/i, 'Choose a valid product'),
   quantity: z.number().finite().positive('Quantity must be greater than 0'),
+  currency: z.string().regex(/^[A-Z]{3}$/i).optional(),
+  priorities: procurementDecisionPrioritiesSchema.optional(),
   selectedSupplierId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   selectedProductId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   decisionReason: z.string().trim().max(3000).optional(),
@@ -455,6 +512,8 @@ export const createProcurementDecisionSchema = z.object({
 export const updateProcurementDecisionSchema = z.object({
   productId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   quantity: z.number().finite().positive().optional(),
+  currency: z.string().regex(/^[A-Z]{3}$/i).optional(),
+  priorities: procurementDecisionPrioritiesSchema.optional(),
   selectedSupplierId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   selectedProductId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   decisionReason: z.string().trim().max(3000).optional(),

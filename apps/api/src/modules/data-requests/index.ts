@@ -20,6 +20,7 @@ import {
   createDataRequestSchema,
   requestClarificationSchema,
   saveDataRequestItemResponseSchema,
+  supplierDataRequestClaimSchema,
   updateDataRequestSchema,
 } from '@carbonpilot/validation';
 import { authenticate, AuthUserPayload } from '../../middleware/auth.middleware';
@@ -147,7 +148,7 @@ export class DataRequestsService {
   async create(data: Record<string, any>, user: AuthUserPayload) {
     const parsed = createDataRequestSchema.safeParse(data);
     if (!parsed.success) throw this.validationError(parsed.error.issues);
-    const { supplier, organization } = await this.getConnectedSupplier(parsed.data.supplierId, user.organizationId);
+    const { supplier, organization } = await this.getSupplierForRequest(parsed.data.supplierId, user.organizationId);
     let productId: string | undefined;
     let selectedProduct: any;
     if (parsed.data.productId) {
@@ -164,6 +165,7 @@ export class DataRequestsService {
       if (!template) throw new AppError('Questionnaire template not found', 404, 'NOT_FOUND');
       this.assertTemplateMatches(template, supplier, selectedProduct);
     }
+    await this.ensureSupplierRelationshipForRequest(organization._id.toString(), user.organizationId);
     const requestedItems = this.normalizeQuestionSet(parsed.data.requestedItems);
 
     const request = await DataRequestModel.create({
@@ -171,9 +173,10 @@ export class DataRequestsService {
       supplierOrganizationId: organization._id,
       createdBy: user.userId,
       title: parsed.data.title,
-      description: parsed.data.description,
+      description: parsed.data.description.trim() || 'Please upload the requested documents for this product.',
       deadline: parsed.data.deadline ? new Date(parsed.data.deadline) : undefined,
       productId,
+      requestGroupId: parsed.data.requestGroupId,
       templateId: parsed.data.templateId,
       status: DataRequestStatus.DRAFT,
       allowPartialSubmission: parsed.data.allowPartialSubmission,
@@ -331,7 +334,7 @@ export class DataRequestsService {
     if (!file || !file.size) throw new AppError('Choose a document to upload', 400, 'NO_FILE');
     if (file.size > MAX_FILE_SIZE) throw new AppError('File exceeds the 25 MB limit', 413, 'FILE_TOO_LARGE');
     if (!isSupportedProcurementFile(file)) {
-      throw new AppError('Only valid PDF, PNG, and JPG/JPEG files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
+      throw new AppError('Only valid PDF, PNG, JPG/JPEG, and WEBP files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
     }
     const { request, supplier } = await this.findSupplierRequest(id, user.organizationId);
     this.assertSupplierCanRespond(request);
@@ -435,6 +438,87 @@ export class DataRequestsService {
       status: document.status,
       processingError: document.processingError,
     };
+  }
+
+  async submitSupplierClaim(id: string, itemId: string, data: unknown, user: AuthUserPayload) {
+    const { request, supplier } = await this.findSupplierRequest(id, user.organizationId);
+    this.assertSupplierCanRespond(request);
+    const item = this.findItem(request, itemId);
+    if (item.responseType !== DataRequestResponseType.DOCUMENT && !item.requiresEvidence) {
+      throw new AppError('A claim can only be linked to a requested evidence document', 400, 'EVIDENCE_NOT_REQUESTED');
+    }
+
+    const parsed = supplierDataRequestClaimSchema.safeParse(data);
+    if (!parsed.success) throw this.validationError(parsed.error.issues);
+    const input = parsed.data;
+    const claimType = input.type === 'OTHER' ? input.customType!.trim() : input.type;
+    const document = await DocumentModel.findOne({
+      _id: input.documentId,
+      organizationId: user.organizationId,
+      supplierId: supplier._id,
+      dataRequestId: request._id,
+      requestedItemId: item._id,
+      status: { $ne: DocumentStatus.ARCHIVED },
+    });
+    if (!document) throw new AppError('Choose an active document uploaded for this requirement', 404, 'DOCUMENT_NOT_FOUND');
+
+    const existing = await ClaimModel.findOne({
+      supplierId: supplier._id,
+      dataRequestId: request._id,
+      documentId: document._id,
+      type: claimType,
+      'sourceReference.section': 'SUPPLIER_DECLARED',
+    });
+    if (existing) {
+      const sameValue = String(existing.value) === String(input.value)
+        && existing.unit === input.unit
+        && existing.normalizedData?.functionalUnit === input.functionalUnit
+        && existing.methodology === input.methodology
+        && existing.reportingPeriod === input.reportingPeriod
+        && existing.boundary === input.boundary;
+      if (!sameValue) {
+        throw new AppError('A claim of this type is already attached to this document', 409, 'CLAIM_ALREADY_EXISTS');
+      }
+      return { _id: existing._id.toString(), status: existing.status, reused: true };
+    }
+
+    const claimText = `${claimType}: ${input.value}${input.unit ? ` ${input.unit}` : ''}`;
+    const claim = await ClaimModel.create({
+      supplierId: supplier._id,
+      buyerOrganizationId: request.customerOrganizationId,
+      productId: request.productId || document.productId,
+      documentId: document._id,
+      dataRequestId: request._id,
+      type: claimType,
+      value: input.value,
+      unit: input.unit,
+      methodology: input.methodology,
+      reportingPeriod: input.reportingPeriod,
+      boundary: input.boundary,
+      claimText,
+      normalizedData: input.functionalUnit ? { functionalUnit: input.functionalUnit } : undefined,
+      sourceReference: {
+        documentId: document._id,
+        section: 'SUPPLIER_DECLARED',
+        sourceText: claimText,
+      },
+      status: ClaimStatus.PENDING,
+    });
+    await ClaimEvidenceLinkModel.create({
+      claimId: claim._id,
+      documentId: document._id,
+      sourceText: claimText,
+      relationshipType: 'SUPPLIER_DECLARED_CLAIM',
+    });
+    await auditService.logAction({
+      organizationId: user.organizationId,
+      userId: user.userId,
+      action: 'CLAIM_CREATED',
+      entityType: 'Claim',
+      entityId: claim._id.toString(),
+      newValue: { type: claimType, value: input.value, unit: input.unit, dataRequestId: request._id.toString(), source: 'SUPPLIER_DECLARED' },
+    });
+    return { _id: claim._id.toString(), status: claim.status, reused: false };
   }
 
   async reprocessDocument(documentId: string, user: AuthUserPayload) {
@@ -787,6 +871,7 @@ export class DataRequestsService {
       }),
       user
     );
+    await this.verifySupplierDeclaredClaims(request, supplier);
     await this.notifyOrganization(
       request.customerOrganizationId.toString(),
       hasMissingRequired ? 'Supplier saved partial data request progress' : 'Supplier submitted a data request',
@@ -797,6 +882,54 @@ export class DataRequestsService {
       hasMissingRequired ? 'INFO' : 'SUCCESS'
     );
     return this.toResponse(request, true, OrganizationType.SUPPLIER);
+  }
+
+  private async verifySupplierDeclaredClaims(request: RequestRecord, supplier: any) {
+    try {
+      const documents = await DocumentModel.find({
+        dataRequestId: request._id,
+        supplierId: supplier._id,
+      });
+      if (!documents.length) return;
+      const links = await ClaimEvidenceLinkModel.find({
+        documentId: { $in: documents.map((document: any) => document._id) },
+        relationshipType: 'SUPPLIER_DECLARED_CLAIM',
+      });
+      if (!links.length) return;
+      const [membership, buyerUser] = await Promise.all([
+        OrganizationMemberModel.findOne({
+          organizationId: request.customerOrganizationId,
+          userId: request.createdBy,
+          status: UserStatus.ACTIVE,
+        }),
+        UserModel.findById(request.createdBy),
+      ]);
+      if (!membership || !buyerUser) throw new Error('The requesting buyer user is unavailable for verification.');
+      const buyerActor: AuthUserPayload = {
+        userId: request.createdBy.toString(),
+        organizationId: request.customerOrganizationId.toString(),
+        organizationType: OrganizationType.CUSTOMER,
+        role: membership.role || UserRole.CUSTOMER_ADMIN,
+        email: buyerUser.email,
+      };
+      const { verificationService } = await import('../verification');
+      for (const link of links) {
+        try {
+          await verificationService.runVerification(link.claimId.toString(), buyerActor);
+        } catch (error) {
+          logger.error('Supplier-declared claim verification failed', {
+            claimId: link.claimId.toString(),
+            documentId: link.documentId.toString(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } catch (error) {
+      logger.error('Supplier-declared claims could not be verified on submission', {
+        dataRequestId: request._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private claimTypeForQuestion(item: RequestItem) {
@@ -1016,6 +1149,33 @@ export class DataRequestsService {
     const organization = await OrganizationModel.findOne({ _id: supplier.organizationId, type: OrganizationType.SUPPLIER });
     if (!organization) throw new AppError('Supplier organization not found', 404, 'NOT_FOUND');
     return { supplier, organization };
+  }
+
+  private async getSupplierForRequest(supplierId: string, buyerOrganizationId: string) {
+    if (!mongoose.isValidObjectId(supplierId)) throw new AppError('Choose a valid supplier', 400, 'INVALID_SUPPLIER');
+    const supplier = await SupplierModel.findById(supplierId);
+    if (!supplier || supplier.status !== SupplierStatus.ACTIVE) throw new AppError('Active supplier not found', 404, 'NOT_FOUND');
+    const organization = await OrganizationModel.findOne({ _id: supplier.organizationId, type: OrganizationType.SUPPLIER });
+    if (!organization) throw new AppError('Supplier organization not found', 404, 'NOT_FOUND');
+
+    return { supplier, organization };
+  }
+
+  private async ensureSupplierRelationshipForRequest(supplierOrganizationId: string, buyerOrganizationId: string) {
+    const relationship = await SupplierRelationshipModel.findOne({
+      customerOrganizationId: buyerOrganizationId,
+      supplierOrganizationId,
+    });
+    if (relationship?.status === SupplierStatus.TERMINATED) {
+      throw new AppError('This supplier has been disconnected and cannot receive requests', 403, 'FORBIDDEN');
+    }
+    if (!relationship) {
+      await SupplierRelationshipModel.create({
+        customerOrganizationId: buyerOrganizationId,
+        supplierOrganizationId,
+        status: SupplierStatus.PENDING,
+      });
+    }
   }
 
   private findItem(request: RequestRecord, itemId: string) {
@@ -1277,16 +1437,21 @@ export class DataRequestsService {
               DocumentExtractionModel.findOne({ documentId: document._id }).sort({ processedAt: -1 }),
               ClaimEvidenceLinkModel.find({ documentId: document._id }),
             ]);
-            const links = evidenceLinks || [];
-            const linkedClaims = viewerType === OrganizationType.SUPPLIER ? [] : await Promise.all(links.map(async (link: any) => {
+            const links = (evidenceLinks || []).filter((link: any) =>
+              viewerType !== OrganizationType.SUPPLIER || link.relationshipType === 'SUPPLIER_DECLARED_CLAIM'
+            );
+            const linkedClaims = await Promise.all(links.map(async (link: any) => {
               const claim = await ClaimModel.findById(link.claimId);
               if (!claim || claim.dataRequestId?.toString() !== request._id.toString()) return null;
+              if (viewerType === OrganizationType.SUPPLIER
+                && (!supplierProfile || claim.supplierId?.toString() !== supplierProfile._id.toString())) return null;
               const runs = await VerificationRunModel.find({ claimId: claim._id }).sort({ verifiedAt: -1 });
               return {
                 _id: claim._id.toString(),
                 type: claim.type,
                 value: claim.value,
                 unit: claim.unit,
+                functionalUnit: claim.normalizedData?.functionalUnit,
                 methodology: claim.methodology,
                 reportingPeriod: claim.reportingPeriod,
                 boundary: claim.boundary,
@@ -1298,6 +1463,7 @@ export class DataRequestsService {
                   sourceText: link.sourceText,
                   relationshipType: link.relationshipType,
                 },
+                supplierDeclared: link.relationshipType === 'SUPPLIER_DECLARED_CLAIM',
                 verification: runs?.[0] || null,
                 eligibleForCarbonCalculation: claim.type === 'PCF_VALUE'
                   && typeof claim.value === 'number'
@@ -1444,6 +1610,17 @@ export class DataRequestsController {
     catch (error) { return next(error); }
   }
 
+  async submitClaim(req: Request, res: Response, next: NextFunction) {
+    try {
+      return sendSuccess(res, await dataRequestsService.submitSupplierClaim(
+        req.params.id as string,
+        req.params.itemId as string,
+        req.body,
+        req.user!
+      ), 201);
+    } catch (error) { return next(error); }
+  }
+
   async uploadDocument(req: Request, res: Response, next: NextFunction) {
     try {
       return sendSuccess(res, await dataRequestsService.uploadResponseDocument(
@@ -1509,6 +1686,7 @@ dataRequestsRoutes.get('/:id', (req, res, next) => dataRequestsController.getByI
 dataRequestsRoutes.patch('/:id', requireOrganizationType(OrganizationType.CUSTOMER), (req, res, next) => dataRequestsController.update(req, res, next));
 dataRequestsRoutes.post('/:id/send', requireOrganizationType(OrganizationType.CUSTOMER), (req, res, next) => dataRequestsController.send(req, res, next));
 dataRequestsRoutes.patch('/:id/items/:itemId', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => dataRequestsController.saveResponse(req, res, next));
+dataRequestsRoutes.post('/:id/items/:itemId/claims', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => dataRequestsController.submitClaim(req, res, next));
 dataRequestsRoutes.post('/:id/items/:itemId/document', requireOrganizationType(OrganizationType.SUPPLIER), uploadMiddleware, (req, res, next) => dataRequestsController.uploadDocument(req, res, next));
 dataRequestsRoutes.post('/:id/items/:itemId/reuse-document', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => dataRequestsController.reuseDocument(req, res, next));
 dataRequestsRoutes.post('/:id/submit', requireOrganizationType(OrganizationType.SUPPLIER), (req, res, next) => dataRequestsController.submit(req, res, next));

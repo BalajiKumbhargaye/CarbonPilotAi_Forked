@@ -182,6 +182,33 @@ const newProduct = {
 };
 
 describe('product directory and authorization', () => {
+  it('shows active products from unconnected CarbonPilot suppliers in the buyer catalog', async () => {
+    const buyer = token(ids.buyerB, 'CUSTOMER');
+    store.products[1] = {
+      ...store.products[1],
+      name: 'Automotive Steel Sheet',
+      productCode: 'PT-AS-001',
+      category: 'Steel',
+      categoryId: ids.steel,
+      unit: 'kg',
+      sellingPrice: 12,
+      currency: 'USD',
+    };
+
+    const search = await (await request('/api/products?search=Automotive%20Steel', buyer)).json();
+    const supplierFilter = await (await request(`/api/products?catalog=true&supplierId=${ids.supplierB}`, buyer)).json();
+    const detail = await request(`/api/products/${ids.productB}`, buyer);
+
+    expect(search.data.map((product: any) => product.supplier._id)).toEqual([ids.supplierA, ids.supplierB]);
+    expect(supplierFilter.data.map((product: any) => product._id)).toEqual([ids.productB]);
+    expect(search.data[1].sellingPrice).toBeUndefined();
+    expect(search.data[1].currency).toBeUndefined();
+    expect(detail.status).toBe(200);
+    const detailData = (await detail.json()).data;
+    expect(detailData.supplier.name).toBe('PolyTech Materials');
+    expect(detailData.sellingPrice).toBeUndefined();
+  });
+
   it('limits buyer list/search/filter results to connected suppliers', async () => {
     const buyer = token(ids.buyerA, 'CUSTOMER');
     const list = await (await request('/api/products', buyer)).json();
@@ -195,14 +222,14 @@ describe('product directory and authorization', () => {
     expect(filtered.data).toHaveLength(1);
   });
 
-  it('rejects direct reads and supplier filters for another buyer organization', async () => {
+  it('allows buyer reads of active catalog product details but blocks unconnected supplier filters outside catalog mode', async () => {
     const buyer = token(ids.buyerB, 'CUSTOMER');
     const list = await request('/api/products', buyer);
     const detail = await request(`/api/products/${ids.productA}`, buyer);
     const filtered = await request(`/api/products?supplierId=${ids.supplierA}`, buyer);
 
     expect((await list.json()).data).toHaveLength(0);
-    expect(detail.status).toBe(403);
+    expect(detail.status).toBe(200);
     expect(filtered.status).toBe(403);
   });
 

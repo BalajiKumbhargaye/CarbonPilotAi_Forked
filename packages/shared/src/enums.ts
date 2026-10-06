@@ -16,6 +16,20 @@ export enum OrganizationType {
   SUPPLIER = 'SUPPLIER',
 }
 
+export function organizationTypeForRole(role: UserRole): OrganizationType | undefined {
+  switch (role) {
+    case UserRole.CUSTOMER_ADMIN:
+    case UserRole.PROCUREMENT_MANAGER:
+    case UserRole.SUSTAINABILITY_MANAGER:
+      return OrganizationType.CUSTOMER;
+    case UserRole.SUPPLIER_ADMIN:
+    case UserRole.DATA_CONTRIBUTOR:
+      return OrganizationType.SUPPLIER;
+    default:
+      return undefined;
+  }
+}
+
 export enum UserStatus {
   ACTIVE = 'ACTIVE',
   INVITED = 'INVITED',

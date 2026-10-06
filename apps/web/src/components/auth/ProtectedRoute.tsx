@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { LoadingState } from '@/components/ui/LoadingState';
-import { apiCurrentUser, clearStoredSession, getStoredSession, type OrganizationType } from '@/lib/auth';
+import { apiCurrentUser, clearStoredSession, getPortalDestination, getStoredSession, type OrganizationType } from '@/lib/auth';
 
 export function ProtectedRoute({
   children,
@@ -13,7 +13,7 @@ export function ProtectedRoute({
   allowedTypes: OrganizationType[];
 }) {
   const router = useRouter();
-  const pathname = usePathname();
+  const allowedType = allowedTypes[0];
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -29,20 +29,18 @@ export function ProtectedRoute({
 
       try {
         const response = await apiCurrentUser();
-        const currentOrgType = response?.organization?.type || response?.user?.organization?.type || session.user.organization.type;
+        const role = response.membership?.role || session.user.role;
+        const organizationType = response.organization?.type || session.user.organization.type;
+        const portalDestination = getPortalDestination(role, organizationType);
 
-        if (!allowedTypes.includes(currentOrgType as OrganizationType)) {
-          router.replace(currentOrgType === 'CUSTOMER' ? '/customer/dashboard' : '/supplier/dashboard');
+        if (!portalDestination) {
+          clearStoredSession();
+          router.replace('/login');
           return;
         }
 
-        if (pathname?.startsWith('/customer') && currentOrgType !== 'CUSTOMER') {
-          router.replace('/supplier/dashboard');
-          return;
-        }
-
-        if (pathname?.startsWith('/supplier') && currentOrgType !== 'SUPPLIER') {
-          router.replace('/customer/dashboard');
+        if (organizationType !== allowedType) {
+          router.replace(portalDestination);
           return;
         }
 
@@ -62,7 +60,7 @@ export function ProtectedRoute({
     return () => {
       cancelled = true;
     };
-  }, [allowedTypes, pathname, router]);
+  }, [allowedType, router]);
 
   if (!ready) {
     return (

@@ -54,18 +54,30 @@ export class ProductService {
 
   async getAll(user: Request['user'], filters: Record<string, string>) {
     await this.backfillLegacyCategories();
-    const supplierIds = await this.getAllowedSupplierIds(user!);
     if (filters.supplierId && !mongoose.isValidObjectId(filters.supplierId)) {
       throw new AppError('Choose a valid supplier', 400, 'INVALID_SUPPLIER');
     }
     if (filters.categoryId && !mongoose.isValidObjectId(filters.categoryId)) {
       throw new AppError('Choose a valid product category', 400, 'INVALID_CATEGORY');
     }
+
+    const isPublicCatalog = user!.organizationType !== OrganizationType.SUPPLIER
+      && (filters.catalog === 'true' || !!filters.search?.trim());
+    const usePublicSupplierCatalog = isPublicCatalog && filters.status !== ProductStatus.INACTIVE;
+    const supplierIds = usePublicSupplierCatalog
+      ? await this.getCatalogSupplierIds()
+      : await this.getAllowedSupplierIds(user!);
+    if (usePublicSupplierCatalog) {
+      filters.status = ProductStatus.ACTIVE;
+    }
     if (filters.supplierId && !supplierIds.includes(filters.supplierId)) {
       throw new AppError('You cannot access products for this supplier', 403, 'FORBIDDEN');
     }
     if (!supplierIds.length) return [];
 
+    const priceVisibleSupplierIds = usePublicSupplierCatalog
+      ? await this.getAllowedSupplierIds(user!)
+      : supplierIds;
     let searchableSupplierIds = supplierIds;
     const search = filters.search?.trim();
     let matchingSupplierIds: string[] = [];
@@ -96,7 +108,9 @@ export class ProductService {
     }
 
     const products = await ProductModel.find(query).sort({ name: 1 });
-    return Promise.all(products.map((product) => this.toResponse(product)));
+    return Promise.all(products.map((product) =>
+      this.toResponse(product, priceVisibleSupplierIds.includes(product.supplierId.toString()))
+    ));
   }
 
   async getById(id: string, user: Request['user']) {
@@ -104,7 +118,21 @@ export class ProductService {
     await this.backfillLegacyCategories();
     const product = await ProductModel.findById(id);
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
-    await this.assertCanAccess(product.supplierId.toString(), user!);
+    if (user!.organizationType === OrganizationType.SUPPLIER || product.status !== ProductStatus.ACTIVE) {
+      await this.assertCanAccess(product.supplierId.toString(), user!);
+    } else {
+      const supplier = await SupplierModel.findById(product.supplierId);
+      const organization = supplier ? await OrganizationModel.findById(supplier.organizationId) : null;
+      if (!supplier || organization?.type !== OrganizationType.SUPPLIER) {
+        throw new AppError('Product not found', 404, 'NOT_FOUND');
+      }
+      const relationship = await SupplierRelationshipModel.findOne({
+        customerOrganizationId: user!.organizationId,
+        supplierOrganizationId: supplier.organizationId,
+        status: { $ne: SupplierStatus.TERMINATED },
+      });
+      return this.toResponse(product, !!relationship);
+    }
     return this.toResponse(product);
   }
 
@@ -240,6 +268,13 @@ export class ProductService {
     return suppliers.map((supplier) => supplier._id.toString());
   }
 
+  private async getCatalogSupplierIds() {
+    const organizations = await OrganizationModel.find({ type: OrganizationType.SUPPLIER });
+    if (!organizations.length) return [];
+    const suppliers = await SupplierModel.find({ organizationId: { $in: organizations.map((organization) => organization._id) } });
+    return suppliers.map((supplier) => supplier._id.toString());
+  }
+
   private async getCategory(id: string) {
     if (!mongoose.isValidObjectId(id)) throw new AppError('Choose a valid product category', 400, 'INVALID_CATEGORY');
     const category = await ProductCategoryModel.findOne({ _id: id, isActive: true });
@@ -258,14 +293,14 @@ export class ProductService {
     }));
   }
 
-  private async toResponse(product: any) {
+  private async toResponse(product: any, includeCommercialData = true) {
     const [supplier, category] = await Promise.all([
       SupplierModel.findById(product.supplierId),
       product.categoryId ? ProductCategoryModel.findById(product.categoryId) : null,
     ]);
     const organization = supplier ? await OrganizationModel.findById(supplier.organizationId) : null;
     const value = typeof product.toObject === 'function' ? product.toObject() : product;
-    return {
+    const response = {
       ...value,
       category: category?.name || value.category,
       categoryId: category?._id || value.categoryId,
@@ -275,6 +310,11 @@ export class ProductService {
         name: organization?.name || 'Supplier',
       } : null,
     };
+    if (!includeCommercialData) {
+      delete response.sellingPrice;
+      delete response.currency;
+    }
+    return response;
   }
 
   private slugify(value: string) {
@@ -312,7 +352,7 @@ export class ProductController {
   async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const filters: Record<string, string> = {};
-      for (const field of ['supplierId', 'categoryId', 'status', 'search']) {
+      for (const field of ['supplierId', 'categoryId', 'status', 'search', 'catalog']) {
         const value = req.query[field];
         if (typeof value === 'string') filters[field] = value;
       }

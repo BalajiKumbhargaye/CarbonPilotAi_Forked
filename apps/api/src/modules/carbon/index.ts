@@ -1348,6 +1348,68 @@ export class CarbonService {
     const rows = suppliers.filter((row): row is NonNullable<typeof row> => !!row);
     if (!rows.length) throw new AppError('No supplier comparisons available', 404, 'NOT_FOUND');
 
+    const rankedRows = rows.map((row) => {
+      let score = 0;
+      const reasons: string[] = [];
+      const evidenceStatusValue = row.evidenceStatus || 'NOT_AVAILABLE';
+      const evidenceScore: Record<string, number> = {
+        SUPPORTED: 100,
+        CORROBORATED: 95,
+        PARTIALLY_SUPPORTED: 75,
+        EXTRACTED: 65,
+        PENDING: 35,
+        NEEDS_REVIEW: 15,
+        INCONSISTENT: 0,
+        UNSUPPORTED: 0,
+        NOT_AVAILABLE: 0,
+      };
+      score += evidenceScore[evidenceStatusValue] ?? 0;
+
+      if (row.comparableCarbon) {
+        score += 20;
+        reasons.push(`Carbon claim is directly comparable with ${row.comparableCarbon.functionalUnit || 'the selected functional unit'} and ${row.comparableCarbon.reportingPeriod || 'the selected reporting period'}.`);
+      } else {
+        reasons.push('Carbon claim is not directly comparable because the supporting PCF metadata or methodology differs from the other suppliers.');
+      }
+
+      if (row.dataCompleteness.percentage >= 80) {
+        score += 15;
+        reasons.push(`Questionnaire completeness is ${row.dataCompleteness.percentage}% (${row.dataCompleteness.completed}/${row.dataCompleteness.requested}), which strengthens supplier evidence coverage.`);
+      } else if (row.dataCompleteness.requested > 0) {
+        reasons.push(`Questionnaire completeness is only ${row.dataCompleteness.percentage}% (${row.dataCompleteness.completed}/${row.dataCompleteness.requested}), leaving evidence gaps.`);
+      }
+
+      if (row.sourceReference?.documentName) {
+        const pageText = row.sourceReference.page ? `, page ${row.sourceReference.page}` : '';
+        reasons.push(`Supporting evidence is attached from ${row.sourceReference.documentName}${pageText}.`);
+      } else if (row.evidenceStatus && row.evidenceStatus !== 'NOT_AVAILABLE') {
+        reasons.push('Supplier has evidence on file, but the source document reference is not yet linked to a page-level citation.');
+      }
+
+      if (row.pricePerUnit !== null) {
+        score += 5;
+      }
+
+      if (row.warnings.length === 0) {
+        score += 5;
+      } else {
+        reasons.push(...row.warnings.slice(0, 2));
+      }
+
+      return {
+        ...row,
+        rank: 0,
+        rankScore: Math.max(0, Math.min(100, score)),
+        rankReasons: reasons.slice(0, 6),
+      };
+    }).sort((left, right) => right.rankScore - left.rankScore || left.supplierName.localeCompare(right.supplierName));
+
+    const orderedRows = rankedRows.map((row, index) => ({
+      ...row,
+      rank: index + 1,
+      rankReasons: row.rankReasons.length ? row.rankReasons : ['Evidence quality is limited by missing or unsupported supplier data.'],
+    }));
+
     const warnings: string[] = [];
     const comparableRows = rows.filter((row): row is typeof row & {
       comparableCarbon: NonNullable<typeof row.comparableCarbon> & {
@@ -1419,7 +1481,7 @@ export class CarbonService {
         category: product.category,
         unit: product.unit,
       },
-      suppliers: rows,
+      suppliers: orderedRows,
       warnings,
       tradeOff,
       comparability: {

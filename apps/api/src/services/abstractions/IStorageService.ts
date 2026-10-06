@@ -104,6 +104,14 @@ export function isSupportedProcurementFile(file: {
     '.png': { mimeType: 'image/png', matches: (buffer) => buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
     '.jpg': { mimeType: 'image/jpeg', matches: (buffer) => buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff },
     '.jpeg': { mimeType: 'image/jpeg', matches: (buffer) => buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff },
+    '.webp': {
+      mimeType: 'image/webp',
+      matches: (buffer) => {
+        if (buffer.length < 12) return false;
+        return buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+          && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
+      },
+    },
   };
   const signature = signatures[extension];
   return !!signature && file.mimetype.toLowerCase() === signature.mimeType && signature.matches(file.buffer);

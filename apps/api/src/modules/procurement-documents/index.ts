@@ -847,7 +847,7 @@ export class ProcurementDocumentsService {
     if (!file || file.size < 1) throw new AppError('Choose a non-empty file', 400, 'INVALID_FILE');
     if (file.size > MAX_FILE_SIZE) throw new AppError('File exceeds the 25 MB limit', 413, 'FILE_TOO_LARGE');
     if (!isSupportedProcurementFile(file)) {
-      throw new AppError('Only valid PDF, PNG, and JPG/JPEG files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
+      throw new AppError('Only valid PDF, PNG, JPG/JPEG, and WEBP files are supported', 415, 'UNSUPPORTED_FILE_TYPE');
     }
   }
 

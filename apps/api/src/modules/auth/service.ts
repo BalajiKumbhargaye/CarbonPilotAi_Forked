@@ -8,7 +8,14 @@ import { SupplierRelationshipModel } from '../../models/SupplierRelationship';
 import { AppError } from '../../utils/response';
 import { ENV, resolveJwtExpirySeconds } from '../../config/env';
 import { RegisterInput, LoginInput } from '@carbonpilot/validation';
-import { UserRole, OrganizationType, UserStatus, OrganizationStatus, SupplierStatus } from '@carbonpilot/shared';
+import {
+  UserRole,
+  OrganizationType,
+  UserStatus,
+  OrganizationStatus,
+  SupplierStatus,
+  organizationTypeForRole,
+} from '@carbonpilot/shared';
 
 export class AuthService {
   async register(data: RegisterInput) {
@@ -148,6 +155,9 @@ export class AuthService {
     if (!organization) {
       throw new AppError('Associated organization not found', 404, 'ORG_NOT_FOUND');
     }
+    if (organizationTypeForRole(membership.role) !== organization.type) {
+      throw new AppError('Your account role does not match its organization type', 403, 'ROLE_ORGANIZATION_MISMATCH');
+    }
 
     const token = this.generateToken({
       userId: user._id.toString(),
@@ -180,7 +190,17 @@ export class AuthService {
     }
 
     const membership = await OrganizationMemberModel.findOne({ userId: user._id });
-    const organization = membership ? await OrganizationModel.findById(membership.organizationId) : null;
+    if (!membership) {
+      throw new AppError('User does not belong to any organization', 403, 'NO_ORGANIZATION');
+    }
+    const organization = await OrganizationModel.findById(membership.organizationId);
+    if (!organization) {
+      throw new AppError('Associated organization not found', 404, 'ORG_NOT_FOUND');
+    }
+
+    if (organizationTypeForRole(membership.role) !== organization.type) {
+      throw new AppError('Your account role does not match its organization type', 403, 'ROLE_ORGANIZATION_MISMATCH');
+    }
 
     return {
       user,

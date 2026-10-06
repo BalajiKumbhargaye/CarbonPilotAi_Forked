@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { DocumentType, IDocument, IClaim, IDocumentExtraction } from '@carbonpilot/shared';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { DocumentExtractionTable } from '@/components/evidence/DocumentExtractionTable';
 import {
   extractEvidence,
   getEvidenceClaims,
@@ -207,7 +208,7 @@ export function EvidenceDocumentsWorkspace({ mode }: { mode: 'buyer' | 'supplier
             File (up to 25 MB)
             <input
               type="file"
-              accept=".pdf,.png,.jpg,.jpeg"
+            accept=".pdf,.png,.jpg,.jpeg,.webp"
               onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
               className="mt-1 block w-full rounded-lg border border-slate-300 p-2 text-sm dark:border-slate-700"
             />
@@ -307,16 +308,9 @@ export function EvidenceDocumentsWorkspace({ mode }: { mode: 'buyer' | 'supplier
               {extraction && (
                 <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-900">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Extracted fields</p>
-                  {extraction.fields.length ? (
-                    <ul className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
-                      {extraction.fields.map((field, index) => (
-                        <li key={`${field.field}-${index}`}>
-                          {field.field}: {String(field.value)}{field.unit ? ` ${field.unit}` : ''}
-                          {field.page ? ` · page ${field.page}` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : <p className="mt-2 text-sm text-slate-500">No fields were returned.</p>}
+                  <div className="mt-3">
+                    <DocumentExtractionTable fields={extraction.fields} emptyMessage="No fields were returned." />
+                  </div>
                 </div>
               )}
             </Card>

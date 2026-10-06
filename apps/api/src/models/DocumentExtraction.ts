@@ -20,6 +20,7 @@ const ExtractionFieldSchema = new Schema(
     unit: { type: String },
     confidence: { type: Number, min: 0, max: 1 },
     page: { type: Number },
+    source: { type: String },
     sourceText: { type: String },
     section: { type: String },
     tableReference: { type: String },

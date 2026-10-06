@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { organizationTypeForRole } from '@carbonpilot/shared';
 import { ENV } from '../config/env';
 import { sendError } from '../utils/response';
 import { UserRole, OrganizationType } from '@carbonpilot/shared';
@@ -36,6 +37,15 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
 
   try {
     const decoded = jwt.verify(token, ENV.JWT_SECRET) as AuthUserPayload;
+    if (
+      !decoded.userId
+      || !decoded.organizationId
+      || !decoded.email
+      || organizationTypeForRole(decoded.role) !== decoded.organizationType
+    ) {
+      sendError(res, 401, 'INVALID_TOKEN', 'Token is expired or invalid');
+      return;
+    }
     req.user = decoded;
     next();
   } catch (_err) {

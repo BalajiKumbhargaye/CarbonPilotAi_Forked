@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { AuthLayout } from '@/components/layouts/AuthLayout';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
-import { apiLogin, setStoredSession } from '@/lib/auth';
+import { apiLogin, getPortalDestination, setStoredSession } from '@/lib/auth';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,12 +22,16 @@ export default function LoginPage() {
 
     try {
       const response = await apiLogin({ email, password });
+      const destination = getPortalDestination(response.user.role, response.user.organization.type);
+      if (!destination) {
+        throw new Error('Your account role does not match its organization. Please contact your administrator.');
+      }
+
       setStoredSession({
         token: response.token,
         user: response.user,
       });
 
-      const destination = response.user.organization.type === 'CUSTOMER' ? '/customer/dashboard' : '/supplier/dashboard';
       router.push(destination);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to sign in. Please try again.');

@@ -165,6 +165,9 @@ export interface SupplierComparisonRow {
   purchaseHistory: { count: number; totalQuantity: number | null; totalQuantityUnit?: string | null; lastPurchaseDate?: string | null; lastPrice?: number | null; currency?: string | null };
   warnings: string[];
   comparableCarbon?: { value: number; unit: string; functionalUnit?: string; boundary?: string; reportingPeriod?: string; methodology?: string } | null;
+  rank?: number;
+  rankScore?: number;
+  rankReasons?: string[];
 }
 
 export interface SupplierComparisonResult {
