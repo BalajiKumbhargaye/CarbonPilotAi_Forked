@@ -6,22 +6,15 @@ import { getStoredSession, logout } from '@/lib/auth';
 import {
   LayoutDashboard,
   Building,
-  Factory,
   Boxes,
   Users2,
-  Inbox,
-  HelpCircle,
   FileText,
-  Award,
   ShieldCheck,
-  AlertCircle,
-  Package,
   Bell,
   Settings,
   Menu,
   LogOut,
   Building2,
-  Leaf,
   Layers,
 } from 'lucide-react';
 
@@ -42,44 +35,26 @@ const supplierNav: NavSection[] = [
     title: 'COMPANY',
     items: [
       { label: 'Company Profile', href: '/supplier/company/profile', icon: Building },
-      { label: 'Facilities', href: '/supplier/facilities', icon: Factory },
       { label: 'Products', href: '/supplier/products', icon: Boxes },
     ],
   },
   {
     title: 'CUSTOMERS',
-    items: [
-      { label: 'Customers', href: '/supplier/customers', icon: Users2 },
-      { label: 'Customer Requests', href: '/supplier/customer-requests', icon: Inbox },
-    ],
+    items: [{ label: 'Customers', href: '/supplier/customers', icon: Users2 }],
   },
   {
     title: 'DATA',
     items: [
       { label: 'Data Requests', href: '/supplier/data-requests', icon: Layers },
-      { label: 'Questionnaires', href: '/supplier/questionnaires', icon: HelpCircle },
-      { label: 'Carbon Data', href: '/supplier/carbon-data', icon: Leaf },
     ],
   },
   {
     title: 'DOCUMENTS',
-    items: [
-      { label: 'Documents', href: '/supplier/documents', icon: FileText },
-      { label: 'Certificates', href: '/supplier/certificates', icon: Award },
-    ],
+    items: [{ label: 'Documents', href: '/supplier/documents', icon: FileText }],
   },
   {
     title: 'VERIFICATION',
-    items: [
-      { label: 'Evidence', href: '/supplier/evidence', icon: ShieldCheck },
-      { label: 'Verification Issues', href: '/supplier/verification-issues', icon: AlertCircle },
-    ],
-  },
-  {
-    title: 'REPORTING',
-    items: [
-      { label: 'Evidence Packs', href: '/supplier/evidence-packs', icon: Package },
-    ],
+    items: [{ label: 'Evidence', href: '/supplier/evidence', icon: ShieldCheck }],
   },
   {
     items: [

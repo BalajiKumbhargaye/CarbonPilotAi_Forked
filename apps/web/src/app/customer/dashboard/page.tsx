@@ -5,11 +5,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { getDataRequestSummary, type DataRequestSummary } from '@/lib/data-requests';
-import {
-  getCarbonTrackingDashboard,
-  getPurchaseSummary,
-  type PurchaseSummary,
-} from '@/lib/procurement';
+import { getPurchaseSummary, type PurchaseSummary } from '@/lib/procurement';
 
 function formatCurrencyTotals(summary: PurchaseSummary | null, loading: boolean) {
   if (loading) return 'Loading…';
@@ -36,21 +32,12 @@ function displayCount(summary: DataRequestSummary | null, key: keyof DataRequest
 export default function CustomerDashboardPage() {
   const [procurementSummary, setProcurementSummary] = useState<PurchaseSummary | null>(null);
   const [dataRequestSummary, setDataRequestSummary] = useState<DataRequestSummary | null>(null);
-  const [calculatedEmissions, setCalculatedEmissions] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       getPurchaseSummary().then(setProcurementSummary).catch(() => setProcurementSummary(null)),
       getDataRequestSummary().then(setDataRequestSummary).catch(() => setDataRequestSummary(null)),
-      getCarbonTrackingDashboard()
-        .then(({ purchases }) => {
-        const available = purchases
-          .map(({ actual }) => actual.emissions)
-          .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-        setCalculatedEmissions(available.length ? available.reduce((sum, value) => sum + value, 0) : null);
-        })
-        .catch(() => setCalculatedEmissions(null)),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -69,20 +56,12 @@ export default function CustomerDashboardPage() {
           <Link href="/customer/data-requests">
             <Button size="sm" variant="outline">New Data Request</Button>
           </Link>
-          <Link href="/customer/evidence-packs">
-            <Button size="sm" variant="primary">Evidence Packs</Button>
-          </Link>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Metric label="Active suppliers" value={loading ? 'Loading…' : procurementSummary ? String(procurementSummary.activeSuppliers) : 'Not available'} detail="From persisted purchases" />
         <Metric label="Purchase value" value={formatCurrencyTotals(procurementSummary, loading)} detail="Totals are kept separate by currency" />
-        <Metric
-          label="Calculated emissions"
-          value={loading ? 'Loading…' : calculatedEmissions === null ? 'Not available' : `${calculatedEmissions.toLocaleString()} kg CO2e`}
-          detail="Only persisted actual carbon calculations"
-        />
       </div>
 
       <Card className="p-6">

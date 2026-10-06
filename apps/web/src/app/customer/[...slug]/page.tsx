@@ -1,6 +1,7 @@
 'use client';
 
 import { useParams } from 'next/navigation';
+import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { PortalPage } from '@/components/ui/PortalPage';
@@ -8,18 +9,21 @@ import { EvidenceDocumentsWorkspace } from '@/components/evidence/EvidenceDocume
 import { VerificationDashboard } from '@/components/evidence/VerificationDashboard';
 
 const sectionTitles: Record<string, string> = {
-  questionnaires: 'Questionnaires',
   documents: 'Documents',
   'evidence-center': 'Evidence Center',
-  anomalies: 'Anomalies',
-  'carbon/overview': 'Carbon Overview',
-  'carbon/scope-3': 'Scope 3',
-  'carbon/calculations': 'Calculations',
-  reports: 'Reports',
-  'evidence-packs': 'Evidence Packs',
   notifications: 'Notifications',
   settings: 'Settings',
 };
+
+const unavailableSections = new Set([
+  'questionnaires',
+  'anomalies',
+  'carbon/overview',
+  'carbon/scope-3',
+  'carbon/calculations',
+  'reports',
+  'evidence-packs',
+]);
 
 function toTitle(value: string) {
   return value.split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
@@ -28,6 +32,7 @@ function toTitle(value: string) {
 export default function CustomerDynamicPage() {
   const params = useParams<{ slug?: string[] }>();
   const slug = params.slug ? params.slug.join('/') : 'dashboard';
+  if (unavailableSections.has(slug)) notFound();
   if (slug === 'evidence-center') {
     return (
       <PortalPage

@@ -55,14 +55,9 @@ export default function SupplierDashboardPage() {
         </div>
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Feature title="Documents and evidence" href="/supplier/documents">
-          Upload supporting files and review extraction and verification results when available.
-        </Feature>
-        <Feature title="Verification feedback" href="/supplier/verification-issues">
-          Review feedback linked to your data requests. No aggregate verification status is available here.
-        </Feature>
-      </div>
+      <Feature title="Documents and evidence" href="/supplier/documents">
+        Upload supporting files and review extraction and verification results when available.
+      </Feature>
 
       <p className="text-sm text-slate-500">
         Customer counts, evidence coverage, carbon-record totals, company readiness, and recent activity are not available as persisted dashboard summaries.

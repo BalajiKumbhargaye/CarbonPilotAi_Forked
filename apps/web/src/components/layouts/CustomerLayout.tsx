@@ -11,15 +11,8 @@ import {
   Users,
   GitCompare,
   Inbox,
-  HelpCircle,
   FileText,
   ShieldCheck,
-  AlertTriangle,
-  Leaf,
-  Layers,
-  Calculator,
-  BarChart3,
-  Package,
   Boxes,
   Bell,
   Settings,
@@ -66,7 +59,6 @@ const customerNav: NavSection[] = [
     title: 'DATA COLLECTION',
     items: [
       { label: 'Data Requests', href: '/customer/data-requests', icon: Inbox },
-      { label: 'Questionnaires', href: '/customer/questionnaires', icon: HelpCircle },
     ],
   },
   {
@@ -74,22 +66,6 @@ const customerNav: NavSection[] = [
     items: [
       { label: 'Documents', href: '/customer/documents', icon: FileText },
       { label: 'Evidence Center', href: '/customer/evidence-center', icon: ShieldCheck },
-      { label: 'Anomalies', href: '/customer/anomalies', icon: AlertTriangle },
-    ],
-  },
-  {
-    title: 'CARBON',
-    items: [
-      { label: 'Carbon Overview', href: '/customer/carbon/overview', icon: Leaf },
-      { label: 'Scope 3', href: '/customer/carbon/scope-3', icon: Layers },
-      { label: 'Calculations', href: '/customer/carbon/calculations', icon: Calculator },
-    ],
-  },
-  {
-    title: 'REPORTING',
-    items: [
-      { label: 'Reports', href: '/customer/reports', icon: BarChart3 },
-      { label: 'Evidence Packs', href: '/customer/evidence-packs', icon: Package },
     ],
   },
   {
